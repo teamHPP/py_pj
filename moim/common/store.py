@@ -6,6 +6,7 @@ save·backups·recover 는 팀 공동 작업 "자료 파일 손상 대응" 담�
 """
 
 import copy
+import datetime as dt
 import json
 import os
 
@@ -13,6 +14,7 @@ EMPTY = {
     "members": [],      # {"name", "joined", "left"}
     "expenses": [],     # {"id", "date", "payer", "amount", "members", "category", "memo"}
     "next_id": 1,
+    "history": [],      # {"at", "action", "id", "before", "after"} — 기능 1 담당(수정·삭제 이력)
 }
 
 
@@ -74,3 +76,14 @@ class Store:
             if m["name"] == name:
                 return m
         return None
+
+    def record(self, action, eid, before, after):
+        """store.data["history"] 끝에 이력 하나를 붙인다(A3). 메모리만 바꾸고 디스크엔 저장하지 않는다.
+        담당: 기능 1"""
+        self.data["history"].append({
+            "at": dt.datetime.now().isoformat(timespec="seconds"),
+            "action": action,
+            "id": eid,
+            "before": copy.deepcopy(before) if before is not None else None,
+            "after": copy.deepcopy(after) if after is not None else None,
+        })
