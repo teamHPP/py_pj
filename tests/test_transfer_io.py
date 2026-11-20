@@ -1,0 +1,99 @@
+"""기능 6(가져오기·내보내기) 담당 테스트. 공통 함수 ledger.duplicates 부터.
+
+예시 자료는 docs/공통모듈_함수규격.md 2장의 S 와 같다. 지출은 add_expense 대신 store.data 에 직접 넣는다.
+"""
+
+import copy
+import datetime as dt
+import unittest
+
+from helpers import StoreCase
+
+from moim.common import ledger
+
+P = ["양정현", "신동훈", "이은경"]
+E = {
+    "id": 1, "date": "2026-11-17", "payer": "양정현", "amount": 9000,
+    "members": P, "category": "식비", "memo": "회의 후 저녁",
+    "deleted": False, "weights": None, "recurring_id": None,
+}
+
+
+class DuplicatesTest(StoreCase):
+    def setUp(self):
+        super().setUp()
+        self.store.data["members"] = [
+            {"name": "양정현", "joined": "2026-09-01", "left": None},
+            {"name": "신동훈", "joined": "2026-09-01", "left": "2026-11-30"},
+            {"name": "이은경", "joined": "2026-09-01", "left": None},
+        ]
+        self.store.data["expenses"] = [copy.deepcopy(E)]
+        self.store.data["next_id"] = 2
+
+    def add(self, **kw):
+        e = copy.deepcopy(E)
+        e.update(kw)
+        self.store.data["expenses"].append(e)
+
+    # 규격 18절 예시
+    def test_spec_examples(self):
+        s = self.store
+        self.assertEqual(ledger.duplicates(s, "2026-11-17", "양정현", "9,000"), [1])
+        self.assertEqual(ledger.duplicates(s, "2026-11-17", "양정현", 9000, exclude_id=1), [])
+        self.assertEqual(ledger.duplicates(s, "2026-11-17", "신동훈", 9000), [])
+        self.assertEqual(ledger.duplicates(s, "2026-11-17", "양정현", 0), [])
+
+    def test_deleted_excluded(self):
+        self.store.data["expenses"][0]["deleted"] = True
+        self.assertEqual(ledger.duplicates(self.store, "2026-11-17", "양정현", 9000), [])
+
+    def test_missing_deleted_key_means_not_deleted(self):
+        del self.store.data["expenses"][0]["deleted"]
+        self.assertEqual(ledger.duplicates(self.store, "2026-11-17", "양정현", 9000), [1])
+
+    def test_sorted_ids_and_exclude(self):
+        self.add(id=5)
+        self.add(id=3)
+        self.add(id=4, date="2026-11-18")
+        self.add(id=6, amount=9001)
+        s = self.store
+        self.assertEqual(ledger.duplicates(s, "2026-11-17", "양정현", 9000), [1, 3, 5])
+        self.assertEqual(ledger.duplicates(s, "2026-11-17", "양정현", 9000, exclude_id=3), [1, 5])
+
+    def test_amount_and_date_forms(self):
+        s = self.store
+        self.assertEqual(ledger.duplicates(s, dt.date(2026, 11, 17), "양정현", "9000원"), [1])
+        self.assertEqual(ledger.duplicates(s, dt.datetime(2026, 11, 17, 23, 59), "양정현", 8999.5), [1])
+        self.assertEqual(ledger.duplicates(s, "2026-11-17", "양정현", "8999.4"), [])
+
+    def test_empty_and_unknown(self):
+        self.assertEqual(ledger.duplicates(self.store, "2026-11-17", "없는사람", 9000), [])
+        self.assertEqual(ledger.duplicates(self.store, "2026-11-17", "양정현", -9000), [])
+        self.store.data["expenses"] = []
+        self.assertEqual(ledger.duplicates(self.store, "2026-11-17", "양정현", 9000), [])
+
+    def test_does_not_change_store(self):
+        before = copy.deepcopy(self.store.data)
+        ledger.duplicates(self.store, "2026-11-17", "양정현", 9000, exclude_id=1)
+        self.assertEqual(self.store.data, before)
+
+    def test_bad_date(self):
+        for d in ("2026-02-30", "2026.11.17", "", None):
+            with self.assertRaises(ValueError):
+                ledger.duplicates(self.store, d, "양정현", 9000)
+
+    def test_bad_amount_message(self):
+        for a in ("abc", True, "nan", "inf", "-inf", "1e400", float("nan")):
+            with self.assertRaises(ValueError) as cm:
+                ledger.duplicates(self.store, "2026-11-17", "양정현", a)
+            self.assertIn("금액 형식이 잘못되었습니다", str(cm.exception))
+
+    def test_bad_exclude_id(self):
+        for x in (0, -1, True, 1.0, "1"):
+            with self.assertRaises(ValueError) as cm:
+                ledger.duplicates(self.store, "2026-11-17", "양정현", 9000, exclude_id=x)
+            self.assertEqual(str(cm.exception), "제외 번호는 양의 정수여야 합니다")
+
+
+if __name__ == "__main__":
+    unittest.main()
