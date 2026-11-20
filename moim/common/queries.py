@@ -1,12 +1,61 @@
 """조회 함수. 여러 기능이 같은 계산을 쓰므로 여기 한 곳에만 둔다. 함수마다 설명 끝에 담당 기능이 있다."""
 
+import copy
+
 from . import dates, money  # noqa: F401
 from .rules import UNCATEGORIZED  # noqa: F401
 
 
+def _expense_day(e):
+    """지출 한 건의 자료형을 검사하고 날짜(date)를 돌려준다. 잘못되면 ValueError. (expenses_in 전용)"""
+    if not isinstance(e, dict):
+        raise ValueError(f"지출 자료 형식이 잘못되었습니다: {e!r}")
+    eid = e.get("id")
+    if isinstance(eid, bool) or not isinstance(eid, int):
+        raise ValueError(f"지출 id가 잘못되었습니다: {eid!r}")
+    date = e.get("date")
+    if not isinstance(date, str):
+        raise ValueError(f"{eid}번 지출의 날짜가 잘못되었습니다: {date!r}")
+    day = dates.parse(date)
+    if dates.fmt(day) != date:
+        raise ValueError(f"{eid}번 지출의 날짜가 YYYY-MM-DD 형식이 아닙니다: {date!r}")
+    amount = e.get("amount")
+    if isinstance(amount, bool) or not isinstance(amount, int) or amount < 1:
+        raise ValueError(f"{eid}번 지출의 금액이 잘못되었습니다(1원 이상의 정수): {amount!r}")
+    if not isinstance(e.get("deleted", False), bool):
+        raise ValueError(f"{eid}번 지출의 삭제 표시가 잘못되었습니다: {e.get('deleted')!r}")
+    return day
+
+
 def expenses_in(store, start, end, include_deleted=False):
-    """기간 안의 지출 목록(시작일·끝일 포함). 담당: 기능 3"""
-    raise NotImplementedError("기능 3 담당이 구현한다")
+    """기간 안의 지출 목록(시작일·끝일 포함). 담당: 기능 3
+
+    규격: docs/공통모듈_함수규격.md 05
+    - start·end 가 None 이면 그쪽은 제한이 없다. 기간 판정은 dates.in_period 를 쓴다
+    - 삭제된 지출(deleted=True)은 include_deleted=True 일 때만 넣는다. deleted 키가 없으면 False
+    - (date, id) 오름차순의 깊은 복사본. 원본을 고치려면 store.get_expense(id)
+    - 날짜 오류, 시작일 > 끝일, bool 이 아닌 include_deleted, 저장소의 잘못된 지출(기간 밖 포함)은 ValueError
+    """
+    if not isinstance(include_deleted, bool):
+        raise ValueError(f"include_deleted 는 True 나 False 여야 합니다: {include_deleted!r}")
+    first = None if start is None else dates.parse(start)
+    last = None if end is None else dates.parse(end)
+    if first is not None and last is not None and first > last:
+        raise ValueError(f"시작일이 끝일보다 늦습니다: {first} > {last}")
+    items = store.data.get("expenses")
+    if not isinstance(items, list):
+        raise ValueError("지출 목록 형식이 잘못되었습니다")
+
+    picked = []
+    for e in items:
+        day = _expense_day(e)
+        if e.get("deleted", False) and not include_deleted:
+            continue
+        if not dates.in_period(day, day if first is None else first, day if last is None else last):
+            continue
+        picked.append((day, e["id"], e))
+    picked.sort(key=lambda item: (item[0], item[1]))
+    return [copy.deepcopy(e) for _, _, e in picked]
 
 
 def period_total(store, start, end):
