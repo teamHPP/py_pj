@@ -2,11 +2,13 @@
 
 import copy
 import datetime as dt
+import json
 import unittest
 
 from helpers import StoreCase
 
 from moim.common.queries import is_locked
+from moim.common.store import EMPTY, Store
 
 NOV = {"start": "2026-11-01", "end": "2026-11-30"}
 
@@ -84,6 +86,36 @@ class IsLockedTest(StoreCase):
         before = copy.deepcopy(self.store.data)
         is_locked(self.store, "2026-11-17")
         self.assertEqual(self.store.data, before)
+
+
+class StoreLocksTest(StoreCase):
+    """store.py EMPTY 의 locks 항목(기능 4). 함수규격 '기능 4가 더하는 자료 항목' 표."""
+
+    def test_new_store_has_empty_locks(self):
+        self.assertEqual(Store(self.path("new.json")).data["locks"], [])
+
+    def test_loaded_empty_store_has_empty_locks(self):
+        self.assertEqual(self.store.data["locks"], [])
+
+    def test_old_file_without_locks_gets_default(self):
+        old = {"members": [], "expenses": [], "next_id": 1}
+        with open(self.path("old.json"), "w", encoding="utf-8") as f:
+            json.dump(old, f)
+        s = Store(self.path("old.json")).load()
+        self.assertEqual(s.data["locks"], [])
+        self.assertEqual(s.data["next_id"], 1)
+
+    def test_locks_survive_save_and_load(self):
+        self.store.data["locks"].append({"start": "2026-11-01", "end": "2026-11-30"})
+        self.store.save()
+        s = Store(self.store.path).load()
+        self.assertEqual(s.data["locks"], [{"start": "2026-11-01", "end": "2026-11-30"}])
+        self.assertTrue(is_locked(s, "2026-11-30"))
+
+    def test_store_does_not_share_empty_locks(self):
+        self.store.data["locks"].append({"start": "2026-11-01", "end": "2026-11-30"})
+        self.assertEqual(EMPTY["locks"], [])
+        self.assertEqual(Store(self.path("other.json")).data["locks"], [])
 
 
 if __name__ == "__main__":
