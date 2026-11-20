@@ -78,5 +78,22 @@ def member_shares(store, start, end):
 
 
 def is_locked(store, on):
-    """정산이 확정된 기간에 속하는 날짜인가. 담당: 기능 4"""
-    raise NotImplementedError("기능 4 담당이 구현한다")
+    """정산이 확정된 기간에 속하는 날짜인가. 담당: 기능 4
+
+    store.data["locks"]: [{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}]. 기간은 시작일·끝일 모두 포함.
+    locks 가 없거나 비어 있으면 False. 조회만 하고 자료는 바꾸지 않는다.
+    """
+    day = dates.parse(on)  # None·빈 값·없는 날짜는 locks 가 없어도 ValueError
+    locks = store.data.get("locks", [])
+    if not isinstance(locks, list):
+        raise ValueError("확정 기간(locks)은 목록이어야 합니다")
+    locked = False
+    for lock in locks:
+        if not isinstance(lock, dict) or "start" not in lock or "end" not in lock:
+            raise ValueError(f"확정 기간 형식이 잘못되었습니다(start·end 필요): {lock}")
+        start, end = dates.parse(lock["start"]), dates.parse(lock["end"])
+        if start > end:
+            raise ValueError(f"확정 기간의 시작일이 끝일보다 늦습니다: {lock['start']} ~ {lock['end']}")
+        if dates.in_period(day, start, end):
+            locked = True
+    return locked
