@@ -83,8 +83,22 @@ def category_of(e):
 
 
 def category_totals(store, start, end):
-    """분류별 건수와 금액. {분류: {"count": n, "amount": 원}} 담당: 기능 2"""
-    raise NotImplementedError("기능 2 담당이 구현한다")
+    """분류별 건수와 금액. {분류: {"count": n, "amount": 원}} 담당: 기능 2
+
+    규격: docs/공통모듈_함수규격.md 04
+    - 지출은 expenses_in(store, start, end) 로만 고르고, 분류는 category_of 로 정한다
+    - 실제 지출이 있는 분류만 넣는다. key 순서는 expenses_in 결과에서 처음 나온 순서
+    - 매번 새 dict 를 돌려준다. Store 는 바꾸지 않는다
+    - expenses_in·category_of 가 낸 ValueError 는 그대로 올린다
+    """
+    totals = {}
+    for e in expenses_in(store, start, end):
+        name = category_of(e)
+        if name not in totals:
+            totals[name] = {"count": 0, "amount": 0}
+        totals[name]["count"] += 1
+        totals[name]["amount"] += e["amount"]
+    return totals
 
 
 def person_paid(store, start, end):
