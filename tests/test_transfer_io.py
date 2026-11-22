@@ -251,5 +251,129 @@ class PeriodTotalTest(StoreCase):
                 period_total(self.store, d, "2026-11-30")
 
 
+class ReadCsvRowsTest(unittest.TestCase):
+    """22. read_csv_rows — CSV 읽기와 열 이름 연결."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def write(self, data, name="t.csv"):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    # 규격 22절 예시
+    def test_spec_example(self):
+        path = self.write('거래일자,금액\n\n2026-11-17,"9,000"\n2026-11-18\n'.encode("utf-8"), "b.csv")
+        got = csvio.read_csv_rows(path, {"날짜": "date", "거래일자": "date", "금액": "amount"})
+        self.assertEqual(got, ("utf-8-sig", [
+            (3, {"date": "2026-11-17", "amount": "9,000"}),
+            (4, {"date": "2026-11-18", "amount": None}),
+        ]))
+
+    def test_bom_does_not_break_first_header(self):
+        path = self.write("거래일자,금액\n2026-11-17,9000\n".encode("utf-8-sig"))
+        self.assertEqual(csvio.read_csv_rows(path),
+                         ("utf-8-sig", [(2, {"거래일자": "2026-11-17", "금액": "9000"})]))
+
+    def test_cp949_detected(self):
+        path = self.write("거래일자,금액\n2026-11-17,9000\n".encode("cp949"))
+        self.assertEqual(csvio.read_csv_rows(path),
+                         ("cp949", [(2, {"거래일자": "2026-11-17", "금액": "9000"})]))
+
+    def test_given_encoding(self):
+        utf8 = self.write("이름\n가\n".encode("utf-8-sig"), "u.csv")
+        cp949 = self.write("이름\n가\n".encode("cp949"), "k.csv")
+        for enc in ("utf-8", "utf-8-sig"):
+            with self.subTest(enc=enc):
+                self.assertEqual(csvio.read_csv_rows(utf8, encoding=enc), ("utf-8-sig", [(2, {"이름": "가"})]))
+        self.assertEqual(csvio.read_csv_rows(cp949, encoding="cp949"), ("cp949", [(2, {"이름": "가"})]))
+
+    def test_unsupported_encoding(self):
+        path = self.write(b"a\n1\n")
+        for enc in ("euc-kr", "latin-1", "UTF8", ""):
+            with self.subTest(enc=enc), self.assertRaises(ValueError):
+                csvio.read_csv_rows(path, encoding=enc)
+
+    def test_given_encoding_cannot_decode(self):
+        path = self.write("이름\n가\n".encode("utf-8"))
+        with self.assertRaises(ValueError):
+            csvio.read_csv_rows(path, encoding="cp949")
+
+    def test_mapping_not_dict(self):
+        path = self.write(b"a\n1\n")
+        for m in (["a"], "a", 1):
+            with self.subTest(m=m), self.assertRaises(ValueError):
+                csvio.read_csv_rows(path, m)
+
+    def test_mapping_keeps_unmapped_and_ignores_missing_keys(self):
+        path = self.write("거래일자,적요,금액\n2026-11-17,저녁,9000\n".encode("utf-8"))
+        got = csvio.read_csv_rows(path, {"날짜": "date", "거래일자": "date", "메모": "memo"})
+        self.assertEqual(got[1], [(2, {"date": "2026-11-17", "적요": "저녁", "금액": "9000"})])
+
+    def test_header_stripped_values_unchanged(self):
+        path = self.write(' 거래일자 , 금액 \n 2026-11-17 ," 9,000 "\n'.encode("utf-8"))
+        self.assertEqual(csvio.read_csv_rows(path)[1], [(2, {"거래일자": " 2026-11-17 ", "금액": " 9,000 "})])
+
+    def test_quoted_newline_uses_start_line(self):
+        path = self.write(b'a,b\n1,"x\ny"\n2,z\n')
+        self.assertEqual(csvio.read_csv_rows(path)[1], [(2, {"a": "1", "b": "x\ny"}), (4, {"a": "2", "b": "z"})])
+
+    def test_crlf_and_blank_lines(self):
+        path = self.write(b"a,b\r\n1,2\r\n\r\n\r\n3,4\r\n")
+        self.assertEqual(csvio.read_csv_rows(path)[1], [(2, {"a": "1", "b": "2"}), (5, {"a": "3", "b": "4"})])
+
+    def test_extra_values_go_to_none_key(self):
+        path = self.write(b"a,b\n1,2,3,4\n")
+        self.assertEqual(csvio.read_csv_rows(path)[1], [(2, {"a": "1", "b": "2", None: ["3", "4"]})])
+
+    def test_spaces_only_line_is_a_short_row(self):
+        # csv.DictReader 처럼 완전히 빈 줄만 건너뛴다. 공백뿐인 줄은 열이 모자란 행 → 부르는 쪽이 오류로 보고
+        path = self.write(b"a,b\n   \n")
+        self.assertEqual(csvio.read_csv_rows(path)[1], [(2, {"a": "   ", "b": None})])
+
+    def test_empty_and_header_only(self):
+        for data in (b"", b"\xef\xbb\xbf", b"a,b\n", b"a,b\n\n\n"):
+            with self.subTest(data=data):
+                self.assertEqual(csvio.read_csv_rows(self.write(data)), ("utf-8-sig", []))
+
+    def test_bad_header(self):
+        for data in (b"a,,b\n1,2,3\n", b"a, \n1,2\n", b"a,a\n1,2\n", b" a,a \n1,2\n", b"\na,b\n1,2\n"):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                csvio.read_csv_rows(self.write(data))
+
+    def test_two_columns_same_field(self):
+        both = self.write("날짜,거래일자\n1,2\n".encode("utf-8"), "both.csv")
+        with self.assertRaises(ValueError):
+            csvio.read_csv_rows(both, {"날짜": "date", "거래일자": "date"})
+        clash = self.write("date,거래일자\n1,2\n".encode("utf-8"), "clash.csv")
+        with self.assertRaises(ValueError):
+            csvio.read_csv_rows(clash, {"거래일자": "date"})
+
+    def test_neither_encoding(self):
+        with self.assertRaises(ValueError):
+            csvio.read_csv_rows(self.write(b"a\n\x80\xff\n"))
+
+    def test_missing_file(self):
+        with self.assertRaises(FileNotFoundError):
+            csvio.read_csv_rows(os.path.join(self.dir, "none.csv"))
+
+    def test_bank_format_example(self):
+        # docs/은행거래내역형식.md 의 예(CP949), 기능 5가 쓰는 방식
+        text = ("거래일자,거래시각,적요,출금액,입금액,잔액\n"
+                "2026.11.01,09:10,이서연,,20000,20000\n"
+                '2026.11.03,19:42,회의 후 저녁,"48,000",,-28000\n')
+        path = self.write(text.encode("cp949"), "bank.csv")
+        enc, rows = csvio.read_csv_rows(path, {"거래일자": "date", "적요": "memo"})
+        self.assertEqual(enc, "cp949")
+        self.assertEqual([n for n, _ in rows], [2, 3])
+        self.assertEqual(rows[1][1], {"date": "2026.11.03", "거래시각": "19:42", "memo": "회의 후 저녁",
+                                      "출금액": "48,000", "입금액": "", "잔액": "-28000"})
+
+
 if __name__ == "__main__":
     unittest.main()
