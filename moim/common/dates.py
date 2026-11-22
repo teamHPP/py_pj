@@ -62,8 +62,36 @@ def next_month(year, month):
 
 
 def months_between(start_ym, end_ym):
-    """(y,m) 부터 (y,m) 까지 달 목록. 둘 다 포함."""
-    raise NotImplementedError("기능 5 담당이 구현한다")
+    """(y,m) 부터 (y,m) 까지 달 목록. 둘 다 포함.
+
+    규격: docs/공통모듈_함수규격.md 17
+    - 입력은 (연도, 월) tuple. 연도 1~9999, 월 1~12, bool 은 받지 않는다
+    - "YYYY-MM" 문자열은 부르는 쪽이 parse_month 로 바꿔서 넘긴다
+    - 시작 달이 끝 달보다 뒤이거나 입력이 잘못되면 ValueError
+    예: months_between((2026, 11), (2027, 1)) -> [(2026, 11), (2026, 12), (2027, 1)]
+    """
+    start = _check_ym(start_ym, "시작 달")
+    end = _check_ym(end_ym, "끝 달")
+    if start > end:
+        raise ValueError(f"시작 달이 끝 달보다 뒤입니다: {start} > {end}")
+    out = []
+    ym = start
+    while ym <= end:
+        out.append(ym)
+        ym = next_month(*ym)
+    return out
+
+
+def _check_ym(value, label):
+    """(연도, 월) tuple 인지 검사하고 그대로 돌려준다. 잘못되면 ValueError. (months_between 전용)"""
+    if not isinstance(value, tuple) or len(value) != 2:
+        raise ValueError(f"{label}은 (연도, 월) tuple 이어야 합니다: {value!r}")
+    y, m = value
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (y, m)):
+        raise ValueError(f"{label}의 연도·월은 정수여야 합니다: {value!r}")
+    if not (1 <= y <= 9999 and 1 <= m <= 12):
+        raise ValueError(f"{label}의 범위가 잘못되었습니다(연도 1~9999, 월 1~12): {value!r}")
+    return (y, m)
 
 
 def today():
