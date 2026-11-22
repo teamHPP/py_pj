@@ -9,7 +9,7 @@ import unittest
 
 from helpers import StoreCase
 
-from moim.common import ledger
+from moim.common import dates, ledger
 
 P = ["양정현", "신동훈", "이은경"]
 E = {
@@ -93,6 +93,29 @@ class DuplicatesTest(StoreCase):
             with self.assertRaises(ValueError) as cm:
                 ledger.duplicates(self.store, "2026-11-17", "양정현", 9000, exclude_id=x)
             self.assertEqual(str(cm.exception), "제외 번호는 양의 정수여야 합니다")
+
+
+class MonthKeyTest(unittest.TestCase):
+    """20. month_key — 날짜의 달 이름 'YYYY-MM'."""
+
+    # 규격 20절 예시
+    def test_spec_examples(self):
+        self.assertEqual(dates.month_key("2026-11-17"), "2026-11")
+        self.assertEqual(dates.month_key(dt.date(2026, 1, 2)), "2026-01")
+        self.assertEqual(dates.month_key(dt.datetime(2026, 11, 30, 23, 59)), "2026-11")
+
+    def test_month_boundaries(self):
+        # 한 달은 1일부터 말일까지 — 월초·월말·연말·윤년 2월 29일
+        self.assertEqual(dates.month_key("2026-11-01"), "2026-11")
+        self.assertEqual(dates.month_key("2026-11-30"), "2026-11")
+        self.assertEqual(dates.month_key("2026-12-01"), "2026-12")
+        self.assertEqual(dates.month_key("2026-12-31"), "2026-12")
+        self.assertEqual(dates.month_key("2028-02-29"), "2028-02")
+
+    def test_bad_values(self):
+        for v in ("2026-02-30", "2026-11", "2026.11.17", "2027-02-29", "", None):
+            with self.subTest(v=v), self.assertRaises(ValueError):
+                dates.month_key(v)
 
 
 if __name__ == "__main__":

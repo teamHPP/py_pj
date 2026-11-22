@@ -3,7 +3,7 @@
 import calendar
 import datetime as dt
 
-from .rules import DATE_FORMAT
+from .rules import DATE_FORMAT, MONTH_FORMAT
 
 
 def parse(value):
@@ -50,7 +50,14 @@ def in_period(value, start, end):
 
 
 def month_key(value):
-    raise NotImplementedError("기능 6 담당이 구현한다")
+    """날짜의 달 이름 'YYYY-MM'. 담당: 기능 6
+
+    규격: docs/공통모듈_함수규격.md 20
+    - str·date·datetime 을 parse 와 같은 방식으로 해석한다(datetime 은 날짜 부분만)
+    - 월은 두 자리로 채운다(rules.MONTH_FORMAT)
+    - 없는 날짜, 'YYYY-MM' 같은 달 문자열, None·빈 문자열은 parse 의 ValueError 그대로
+    """
+    return parse(value).strftime(MONTH_FORMAT)
 
 
 def prev_month(year, month):
