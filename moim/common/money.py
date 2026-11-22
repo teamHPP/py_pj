@@ -27,6 +27,24 @@ def remainder_order(members, payer=None):
     return order
 
 
+def check_weights(members, weights):
+    """사람별 비율을 검사하고 참여자 순서의 {이름: 비율}로 돌려준다. (A1) 담당: 기능 4
+
+    비율 기준은 이 함수 한 곳만 가진다. ledger.validate(기능 1)와 split 이 함께 쓴다.
+    weights 가 None 이나 {} 이면 모두 1, 빠진 이름은 1. 입력은 바꾸지 않는다.
+    """
+    if weights is None:
+        weights = {}
+    if not isinstance(weights, dict):
+        raise ValueError(f"비율은 {{이름: 정수}} 형식이어야 합니다: {weights!r}")
+    for name, ratio in weights.items():
+        if name not in members:
+            raise ValueError(f"참여자가 아닌 사람의 비율입니다: {name}")
+        if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio <= 0:
+            raise ValueError(f"비율은 1 이상의 정수여야 합니다: {name}={ratio!r}")
+    return {m: weights.get(m, 1) for m in members}
+
+
 def split(amount, members, payer=None, weights=None):
     """금액을 참여자에게 나눈다. 돌려주는 값: {이름: 부담액}. 합계는 항상 amount 와 같다.
 
