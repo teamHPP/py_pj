@@ -74,8 +74,21 @@ def category_totals(store, start, end):
 
 
 def person_paid(store, start, end):
-    """사람마다 낸 돈 합계. 담당: 기능 3"""
-    raise NotImplementedError("기능 3 담당이 구현한다")
+    """사람마다 낸 돈 합계. 담당: 기능 3
+
+    규격: docs/공통모듈_함수규격.md 06
+    - 지출은 expenses_in(store, start, end) 로 고른다(삭제 제외, 양끝 포함)
+    - {낸 사람: 금액 합}. key 순서는 expenses_in 결과에서 처음 나온 순서
+    - 돈을 안 낸 회원은 넣지 않는다. 지출이 없으면 {}
+    - expenses_in 의 ValueError 를 그대로 올리고, payer 가 비어 있지 않은 str 이 아니면 ValueError
+    """
+    totals = {}
+    for e in expenses_in(store, start, end):
+        payer = e.get("payer")
+        if not isinstance(payer, str) or not payer.strip():
+            raise ValueError(f"{e['id']}번 지출의 낸 사람이 잘못되었습니다: {payer!r}")
+        totals[payer] = totals.get(payer, 0) + e["amount"]
+    return totals
 
 
 def is_member_active(store, name, on):
