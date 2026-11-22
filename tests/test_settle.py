@@ -393,5 +393,39 @@ class StoreTransfersTest(StoreCase):
         self.assertEqual(Store(self.path("other.json")).data["transfers"], [])
 
 
+class StoreRecurringTest(StoreCase):
+    """store.py EMPTY 의 recurring 항목(기능 4). 함수규격 '기능 4가 더하는 자료 항목' 표."""
+
+    RULE = {"id": 1, "day": 31, "payer": "양정현", "amount": 50000, "members": ["양정현", "신동훈", "이은경"],
+            "memo": "동아리방 대관료", "weights": None, "start_month": "2026-11", "last_month": None}
+
+    def test_new_store_has_empty_recurring(self):
+        self.assertEqual(Store(self.path("new.json")).data["recurring"], [])
+
+    def test_loaded_empty_store_has_empty_recurring(self):
+        self.assertEqual(self.store.data["recurring"], [])
+
+    def test_old_file_without_recurring_gets_default(self):
+        old = {"members": [], "expenses": [], "next_id": 1,
+               "transfers": [{"date": "2026-11-20", "from": "신동훈", "to": "양정현", "amount": 3000}]}
+        with open(self.path("old.json"), "w", encoding="utf-8") as f:
+            json.dump(old, f)
+        s = Store(self.path("old.json")).load()
+        self.assertEqual(s.data["recurring"], [])
+        self.assertEqual(s.data["transfers"], old["transfers"])
+
+    def test_recurring_survives_save_and_load(self):
+        rule = dict(self.RULE, weights={"양정현": 2}, last_month="2026-11")
+        self.store.data["recurring"].append(rule)
+        self.store.save()
+        s = Store(self.store.path).load()
+        self.assertEqual(s.data["recurring"], [rule])
+
+    def test_store_does_not_share_empty_recurring(self):
+        self.store.data["recurring"].append(dict(self.RULE))
+        self.assertEqual(EMPTY["recurring"], [])
+        self.assertEqual(Store(self.path("other.json")).data["recurring"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
