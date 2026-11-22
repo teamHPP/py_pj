@@ -7,7 +7,7 @@ import datetime as dt
 
 from helpers import StoreCase
 
-from moim.common.queries import is_member_active
+from moim.common.queries import active_members, is_member_active
 
 # 예시 자료 S 의 명부 (공통모듈_함수규격.md 2장)
 S_MEMBERS = [
@@ -79,3 +79,61 @@ class IsMemberActive(SCase):
             self.store.data["members"] = [m]
             with self.subTest(m=m), self.assertRaises(ValueError):
                 is_member_active(self.store, "가", "2026-11-17")
+
+
+class ActiveMembers(SCase):
+    """16. active_members — 그날 회원 이름만, 명부 순서."""
+
+    P = ["양정현", "신동훈", "이은경"]
+
+    def test_all_members(self):
+        self.assertEqual(active_members(self.store, "2026-11-17"), self.P)
+
+    def test_leave_day_and_day_after(self):
+        self.assertEqual(active_members(self.store, "2026-11-30"), self.P)
+        self.assertEqual(active_members(self.store, "2026-12-01"), ["양정현", "이은경"])
+
+    def test_before_anyone_joined(self):
+        self.assertEqual(active_members(self.store, "2026-08-31"), [])
+
+    def test_keeps_roster_order(self):
+        self.store.data["members"].reverse()
+        self.assertEqual(active_members(self.store, "2026-11-17"), ["이은경", "신동훈", "양정현"])
+
+    def test_returns_names_only_and_new_list(self):
+        result = active_members(self.store, dt.date(2026, 11, 17))
+        self.assertTrue(all(isinstance(n, str) for n in result))
+        result.append("바꿈")
+        self.assertEqual(active_members(self.store, "2026-11-17"), self.P)
+
+    def test_does_not_change_store(self):
+        before = [dict(m) for m in self.store.data["members"]]
+        active_members(self.store, "2026-12-01")
+        self.assertEqual(self.store.data["members"], before)
+
+    def test_empty_roster(self):
+        self.store.data["members"] = []
+        self.assertEqual(active_members(self.store, "2026-11-17"), [])
+
+    def test_bad_date_is_error_even_with_empty_roster(self):
+        self.store.data["members"] = []
+        for on in ("2026-02-30", "", None):
+            with self.subTest(on=on), self.assertRaises(ValueError):
+                active_members(self.store, on)
+
+    def test_bad_roster_is_error(self):
+        cases = [
+            "양정현",                                                     # dict 가 아님
+            {"joined": "2026-09-01", "left": None},                       # 이름 없음
+            {"name": "", "joined": "2026-09-01", "left": None},           # 빈 이름
+            {"name": "가", "joined": "2026-12-01", "left": "2026-11-30"},  # 가입일 > 탈퇴일
+        ]
+        for m in cases:
+            self.store.data["members"] = [m]
+            with self.subTest(m=m), self.assertRaises(ValueError):
+                active_members(self.store, "2026-11-17")
+
+    def test_members_not_a_list_is_error(self):
+        self.store.data["members"] = {"양정현": {}}
+        with self.assertRaises(ValueError):
+            active_members(self.store, "2026-11-17")
