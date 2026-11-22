@@ -74,5 +74,34 @@ def table(headers, rows, total=None, numeric=None):
 
 
 def bar_chart(data, bar_width=30, char="#"):
-    """{이름: 값} 을 글자 막대그래프로."""
-    raise NotImplementedError("기능 3 담당이 구현한다")
+    """{이름: 값} 을 글자 막대그래프로. 담당: 기능 3
+
+    규격: docs/공통모듈_함수규격.md 08
+    - 막대 길이 = 값 × bar_width // 최댓값. 모든 값이 0이면 0칸(작은 값도 내림이라 0칸일 수 있음)
+    - 한 줄 = 이름(가장 긴 이름 폭에 맞춰 왼쪽 정렬) + " | " + 막대 + " " + 천 단위 금액
+    - dict 순서대로 '\\n' 으로 잇고 마지막 개행은 없다. {} 는 ""
+    - dict 가 아님, str 이 아닌 key, 음수·bool·정수가 아닌 값, 0 이하·bool·정수가 아닌 bar_width,
+      한 글자가 아니거나 폭 2칸·줄바꿈·제어문자인 char 는 ValueError
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"막대그래프 자료는 dict 여야 합니다: {data!r}")
+    for name, value in data.items():
+        if not isinstance(name, str):
+            raise ValueError(f"막대 이름은 str 이어야 합니다: {name!r}")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("막대 값은 0 이상의 정수여야 합니다")
+    if isinstance(bar_width, bool) or not isinstance(bar_width, int) or bar_width <= 0:
+        raise ValueError(f"막대 폭은 1 이상의 정수여야 합니다: {bar_width!r}")
+    if (not isinstance(char, str) or len(char) != 1 or width(char) != 1
+            or unicodedata.category(char).startswith("C")):
+        raise ValueError(f"막대 글자는 화면 폭 1칸인 글자 하나여야 합니다: {char!r}")
+    if not data:
+        return ""
+
+    top = max(data.values())
+    name_w = max(width(name) for name in data)
+    lines = []
+    for name, value in data.items():
+        bar = char * (value * bar_width // top) if top else ""
+        lines.append(f"{pad(name, name_w)} | {bar} {money.fmt(value)}")
+    return "\n".join(lines)

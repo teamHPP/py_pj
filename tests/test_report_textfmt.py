@@ -1,4 +1,4 @@
-"""기능 3(월별·기간 보고서) 담당의 테스트. 공통 함수 textfmt.table 의 규격(docs/공통모듈_함수규격.md 07절)을 확인한다.
+"""기능 3(월별·기간 보고서) 담당의 테스트. 공통 함수 textfmt.table·bar_chart 의 규격(docs/공통모듈_함수규격.md 07·08절)을 확인한다.
 
 queries 테스트(tests/test_report.py)와 파일을 나눠, 같은 기능 3의 다른 PR과 같은 줄을 고치지 않게 했다.
 """
@@ -6,7 +6,7 @@ queries 테스트(tests/test_report.py)와 파일을 나눠, 같은 기능 3의 
 import copy
 import unittest
 
-from moim.common.textfmt import table
+from moim.common.textfmt import bar_chart, table
 
 
 class TableTest(unittest.TestCase):
@@ -82,6 +82,69 @@ class TableTest(unittest.TestCase):
             with self.subTest(headers=headers, rows=rows, total=total, numeric=numeric):
                 with self.assertRaises(ValueError):
                     table(headers, rows, total=total, numeric=numeric)
+
+
+class BarChartTest(unittest.TestCase):
+    # 규격 08절 예시
+    def test_spec_examples(self):
+        self.assertEqual(bar_chart({"식비": 2, "교통": 1}, bar_width=4), "식비 | #### 2\n교통 | ## 1")
+        self.assertEqual(bar_chart({"a": 100, "b": 10}, bar_width=4), "a | #### 100\nb |  10")   # b는 내림이라 0칸
+
+    def test_spec_empty(self):
+        self.assertEqual(bar_chart({}), "")
+        self.assertEqual(bar_chart({"식비": 0}), "식비 |  0")
+        self.assertEqual(bar_chart({"a": 0, "b": 0}), "a |  0\nb |  0")   # 모두 0이면 모두 0칸
+
+    def test_default_width_like_month_report(self):
+        # 스켈레톤 안내서의 월 보고서 막대그래프와 같은 값: 최댓값은 30칸, 588,400은 30 × 588400 // 924500 = 19칸
+        self.assertEqual(bar_chart({"식비": 924500, "미분류": 588400}),
+                         "식비   | " + "#" * 30 + " 924,500\n"
+                         "미분류 | " + "#" * 19 + " 588,400")
+
+    def test_name_width_uses_screen_width(self):
+        # 한글은 2칸이라 "식비"(4칸)에 맞춰 "etc"(3칸) 뒤에 공백 1칸
+        self.assertEqual(bar_chart({"식비": 1, "etc": 2}, bar_width=2), "식비 | # 1\netc  | ## 2")
+
+    def test_keeps_dict_order(self):
+        self.assertEqual(bar_chart({"b": 1, "a": 2}, bar_width=2), "b | # 1\na | ## 2")
+
+    def test_other_char(self):
+        self.assertEqual(bar_chart({"식비": 2, "교통": 1}, bar_width=4, char="="), "식비 | ==== 2\n교통 | == 1")
+
+    def test_no_trailing_newline_and_input_not_changed(self):
+        data = {"식비": 9000, "교통": 3000}
+        before = dict(data)
+        got = bar_chart(data)
+        self.assertFalse(got.endswith("\n"))
+        self.assertEqual(data, before)
+
+    def test_negative_value_message(self):
+        with self.assertRaises(ValueError) as cm:
+            bar_chart({"식비": -1})
+        self.assertEqual(str(cm.exception), "막대 값은 0 이상의 정수여야 합니다")
+
+    def test_bad_input(self):
+        cases = [
+            ([("식비", 1)], {}),        # dict 가 아님
+            ({1: 1}, {}),               # str 이 아닌 key
+            ({"a": True}, {}),          # bool 값
+            ({"a": 1.5}, {}),           # 정수가 아닌 값
+            ({"a": "3"}, {}),
+            ({"a": None}, {}),
+            ({"a": 1}, {"bar_width": 0}),       # 0 이하 폭
+            ({"a": 1}, {"bar_width": -1}),
+            ({"a": 1}, {"bar_width": True}),    # bool 폭
+            ({"a": 1}, {"bar_width": 2.0}),     # 정수가 아닌 폭
+            ({"a": 1}, {"char": ""}),           # 빈 문자열
+            ({"a": 1}, {"char": "##"}),         # 두 글자 이상
+            ({"a": 1}, {"char": "가"}),         # 폭 2칸
+            ({"a": 1}, {"char": "\n"}),         # 줄바꿈
+            ({"a": 1}, {"char": "\t"}),         # 제어문자
+            ({"a": 1}, {"char": 1}),
+        ]
+        for data, kw in cases:
+            with self.subTest(data=data, kw=kw), self.assertRaises(ValueError):
+                bar_chart(data, **kw)
 
 
 if __name__ == "__main__":
