@@ -1,11 +1,11 @@
-"""기능 3(월별·기간 보고서) 담당의 테스트. 공통 함수 queries.expenses_in 의 규격(docs/공통모듈_함수규격.md 05절)을 확인한다."""
+"""기능 3(월별·기간 보고서) 담당의 테스트. 공통 함수 queries.expenses_in·person_paid 의 규격(docs/공통모듈_함수규격.md 05·06절)을 확인한다."""
 
 import datetime as dt
 import unittest
 
 from helpers import StoreCase
 
-from moim.common.queries import expenses_in
+from moim.common.queries import expenses_in, person_paid
 
 P = ["양정현", "신동훈", "이은경"]
 
@@ -112,6 +112,73 @@ class ExpensesInTest(StoreCase):
         self.store.data["expenses"] = [self.e, "지출 아님"]
         with self.assertRaises(ValueError):
             expenses_in(self.store, None, None)
+
+
+class PersonPaidTest(StoreCase):
+    def setUp(self):
+        super().setUp()
+        self.e = expense(1, "2026-11-17")   # 규격 2장 예시 자료 S 의 e (양정현 9000)
+        self.store.data["expenses"].append(self.e)
+
+    def put(self, *items):
+        self.store.data["expenses"].extend(items)
+
+    def test_spec_examples(self):
+        self.assertEqual(person_paid(self.store, "2026-11-01", "2026-11-30"), {"양정현": 9000})
+        self.assertEqual(person_paid(self.store, "2026-12-01", "2026-12-31"), {})
+        self.put(expense(2, "2026-11-18", 3000, payer="이은경", category=None, memo=""))
+        self.assertEqual(person_paid(self.store, None, None), {"양정현": 9000, "이은경": 3000})
+
+    def test_same_payer_is_summed(self):
+        self.put(expense(2, "2026-11-20", 1000))
+        self.assertEqual(person_paid(self.store, None, None), {"양정현": 10000})
+
+    def test_key_order_follows_expenses_in(self):
+        # key 순서는 expenses_in 결과((date, id) 오름차순)에서 처음 나온 순서
+        self.put(expense(2, "2026-11-05", 3000, payer="이은경"))
+        self.assertEqual(list(person_paid(self.store, None, None)), ["이은경", "양정현"])
+
+    def test_both_ends_included(self):
+        # 규약 3장: 기간은 시작일과 끝일을 모두 포함한다
+        self.put(expense(2, "2026-10-31", 1, payer="이은경"), expense(3, "2026-11-01", 2, payer="이은경"),
+                 expense(4, "2026-11-30", 4, payer="이은경"), expense(5, "2026-12-01", 8, payer="이은경"))
+        self.assertEqual(person_paid(self.store, "2026-11-01", "2026-11-30"), {"이은경": 6, "양정현": 9000})
+
+    def test_deleted_is_excluded(self):
+        # 규약 6-1: 삭제된 지출은 합계에서 빠진다
+        self.e["deleted"] = True
+        self.assertEqual(person_paid(self.store, None, None), {})
+
+    def test_left_member_still_counted(self):
+        # 지금 탈퇴한 사람이라도 과거에 낸 돈은 그대로 센다
+        self.put(expense(2, "2026-11-20", 5000, payer="신동훈"))
+        self.assertEqual(person_paid(self.store, None, None)["신동훈"], 5000)
+
+    def test_sum_equals_total_of_expenses_in(self):
+        # 모든 값의 합은 같은 기간 expenses_in 금액 합(= 19 period_total)과 같다
+        self.put(expense(2, "2026-11-18", 3000, payer="이은경"), expense(3, "2026-11-19", 1234, payer="신동훈"))
+        got = person_paid(self.store, "2026-11-01", "2026-11-30")
+        self.assertEqual(sum(got.values()),
+                         sum(x["amount"] for x in expenses_in(self.store, "2026-11-01", "2026-11-30")))
+
+    def test_new_dict_and_store_not_changed(self):
+        before = [dict(x) for x in self.store.data["expenses"]]
+        first = person_paid(self.store, None, None)
+        first["양정현"] = 0
+        self.assertEqual(person_paid(self.store, None, None), {"양정현": 9000})
+        self.assertEqual(self.store.data["expenses"], before)
+
+    def test_reversed_period_error(self):
+        # expenses_in(05) 의 오류를 그대로 올린다
+        with self.assertRaisesRegex(ValueError, "^시작일이 끝일보다 늦습니다: "):
+            person_paid(self.store, "2026-11-30", "2026-11-01")
+
+    def test_bad_payer(self):
+        for payer in ("", "  ", None, 3):
+            with self.subTest(payer=payer):
+                self.store.data["expenses"] = [expense(1, "2026-11-17", payer=payer)]
+                with self.assertRaises(ValueError):
+                    person_paid(self.store, None, None)
 
 
 if __name__ == "__main__":
