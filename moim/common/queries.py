@@ -180,7 +180,7 @@ def expense_shares(e):
     amount, members, payer = e["amount"], e["members"], e["payer"]
     if isinstance(amount, bool) or not isinstance(amount, int) or amount < 1:
         raise ValueError(f"{e.get('id', '?')}번 지출의 금액이 잘못되었습니다: {amount!r}")
-    if not isinstance(members, list) or not members or not all(isinstance(m, str) and m for m in members):
+    if not isinstance(members, list) or not members or not all(isinstance(m, str) and m.strip() for m in members):
         raise ValueError(f"{e.get('id', '?')}번 지출의 참여자가 잘못되었습니다: {members!r}")
     if not isinstance(payer, str) or not payer.strip():
         raise ValueError(f"{e.get('id', '?')}번 지출의 낸 사람이 잘못되었습니다: {payer!r}")
@@ -188,8 +188,19 @@ def expense_shares(e):
 
 
 def member_shares(store, start, end):
-    """기간 동안 사람마다 부담할 돈 합계. 담당: 기능 4"""
-    raise NotImplementedError("기능 4 담당이 구현한다")
+    """기간 동안 사람마다 부담할 돈 합계. 담당: 기능 4
+
+    규격: docs/공통모듈_함수규격.md 11
+    - 지출은 expenses_in(store, start, end) 로 고르고(삭제 제외, 양끝 포함), 지출마다 expense_shares 를 더한다
+    - {참여자: 부담액 합}. 계산상 0원인 참여자도 넣고, 지출에 참여하지 않은 회원은 넣지 않는다
+    - key 순서는 expenses_in 결과에서 처음 나온 순서. 지금 탈퇴한 사람의 과거 부담액도 그대로 센다
+    - expenses_in·expense_shares 의 ValueError 를 그대로 올린다. Store 는 바꾸지 않는다
+    """
+    totals = {}
+    for e in expenses_in(store, start, end):
+        for name, share in expense_shares(e).items():
+            totals[name] = totals.get(name, 0) + share
+    return totals
 
 
 def is_locked(store, on):

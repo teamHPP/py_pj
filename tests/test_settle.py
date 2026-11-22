@@ -8,7 +8,7 @@ import unittest
 from helpers import StoreCase
 
 from moim.common.money import check_weights, split
-from moim.common.queries import expense_shares, is_locked
+from moim.common.queries import expense_shares, expenses_in, is_locked, member_shares
 from moim.common.store import EMPTY, Store
 
 NOV = {"start": "2026-11-01", "end": "2026-11-30"}
@@ -266,6 +266,7 @@ class ExpenseSharesTest(unittest.TestCase):
             no_amount,                                        # 필수 키 누락
             self.expense(amount=0), self.expense(amount=True), self.expense(amount="9000"),
             self.expense(members=[]), self.expense(members="양정현"), self.expense(members=["양정현", "양정현"]),
+            self.expense(members=["  "]), self.expense(members=["양정현", ""]),  # 공백뿐·빈 이름(낸 사람과 같은 기준)
             self.expense(payer=""), self.expense(payer=None),
             self.expense(weights={"김철수": 1}),
         ]
@@ -280,6 +281,85 @@ class ExpenseSharesTest(unittest.TestCase):
         result["양정현"] = 0
         self.assertEqual(e, before)
 
+
+class MemberSharesTest(StoreCase):
+    """queries.member_shares(기능 4). 함수규격 11절. 예시 자료 S 의 명부·지출 e 로 확인한다."""
+
+    P = ["양정현", "신동훈", "이은경"]
+
+    def setUp(self):
+        super().setUp()
+        self.store.data["members"] = [
+            {"name": "양정현", "joined": "2026-09-01", "left": None},
+            {"name": "신동훈", "joined": "2026-09-01", "left": "2026-11-30"},
+            {"name": "이은경", "joined": "2026-09-01", "left": None},
+        ]
+        self.put(self.expense(1, "2026-11-17"))   # 함수규격 2장 예시 자료 S 의 e (양정현 9000, 3명)
+
+    def expense(self, eid, date, amount=9000, **kw):
+        e = {"id": eid, "date": date, "payer": "양정현", "amount": amount, "members": list(self.P),
+             "category": None, "memo": "", "deleted": False, "weights": None, "recurring_id": None}
+        e.update(kw)
+        return e
+
+    def put(self, *items):
+        self.store.data["expenses"].extend(items)
+
+    def test_spec_examples(self):
+        self.assertEqual(member_shares(self.store, "2026-11-01", "2026-11-30"),
+                         {"양정현": 3000, "신동훈": 3000, "이은경": 3000})
+        self.assertEqual(member_shares(self.store, "2026-12-01", "2026-12-31"), {})
+        self.assertEqual(member_shares(self.store, None, None), {"양정현": 3000, "신동훈": 3000, "이은경": 3000})
+
+    def test_sums_expense_shares_with_weights(self):
+        self.put(self.expense(2, "2026-11-18", 10001, weights={"양정현": 2}))
+        self.assertEqual(member_shares(self.store, None, None), {"양정현": 8001, "신동훈": 5500, "이은경": 5500})
+
+    def test_both_ends_included(self):
+        # 규약 3장: 기간은 시작일과 끝일을 모두 포함한다
+        self.put(self.expense(2, "2026-10-31", 300), self.expense(3, "2026-11-01", 30),
+                 self.expense(4, "2026-11-30", 3), self.expense(5, "2026-12-01", 3000))
+        self.assertEqual(member_shares(self.store, "2026-11-01", "2026-11-30"),
+                         {"양정현": 3011, "신동훈": 3011, "이은경": 3011})
+
+    def test_deleted_is_excluded(self):
+        # 규약 6-1장: 삭제된 지출은 정산에서 빠진다
+        self.put(self.expense(2, "2026-11-18", 600, deleted=True))
+        self.assertEqual(member_shares(self.store, None, None), {"양정현": 3000, "신동훈": 3000, "이은경": 3000})
+
+    def test_zero_share_is_kept_and_non_participant_left_out(self):
+        self.store.data["expenses"] = [self.expense(1, "2026-11-17", 1, members=["양정현", "이은경"])]
+        self.assertEqual(member_shares(self.store, None, None), {"양정현": 1, "이은경": 0})
+
+    def test_key_order_follows_expenses_in(self):
+        # expenses_in 은 (date, id) 오름차순. 더 이른 지출의 참여자 순서가 먼저 온다
+        self.put(self.expense(2, "2026-11-05", 2000, payer="이은경", members=["이은경", "신동훈"]))
+        self.assertEqual(list(member_shares(self.store, None, None)), ["이은경", "신동훈", "양정현"])
+
+    def test_left_member_past_share_counted(self):
+        # 신동훈은 11-30 탈퇴. 그 전 지출의 부담액은 그대로 센다
+        self.assertEqual(member_shares(self.store, None, None)["신동훈"], 3000)
+
+    def test_sum_equals_expenses_in_total(self):
+        self.put(self.expense(2, "2026-11-18", 10001, weights={"양정현": 2}),
+                 self.expense(3, "2026-11-19", 7, payer="이은경", weights={"신동훈": 2}))
+        got = member_shares(self.store, "2026-11-01", "2026-11-30")
+        self.assertEqual(sum(got.values()),
+                         sum(x["amount"] for x in expenses_in(self.store, "2026-11-01", "2026-11-30")))
+
+    def test_errors_come_from_expenses_in_and_expense_shares(self):
+        with self.assertRaisesRegex(ValueError, "^시작일이 끝일보다 늦습니다: "):
+            member_shares(self.store, "2026-11-30", "2026-11-01")
+        self.put(self.expense(2, "2026-11-18", weights={"김철수": 1}))
+        with self.assertRaises(ValueError):
+            member_shares(self.store, None, None)
+
+    def test_does_not_change_store(self):
+        self.put(self.expense(2, "2026-11-18", 10001, weights={"양정현": 2}))
+        before = copy.deepcopy(self.store.data)
+        result = member_shares(self.store, None, None)
+        result["양정현"] = 0
+        self.assertEqual(self.store.data, before)
 
 if __name__ == "__main__":
     unittest.main()
