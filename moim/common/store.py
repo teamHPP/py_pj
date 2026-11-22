@@ -18,6 +18,7 @@ EMPTY = {
     "locks": [],        # {"start", "end"} — 기능 4 담당(정산 확정 기간, 양끝 포함)
     "payments": [],     # {"id", "date", "member", "amount", "memo", "source"} — 기능 5 담당(회비 입금)
     "transfers": [],    # {"date", "from", "to", "amount"} — 기능 4 담당(이미 보낸 송금, 부분 정산)
+    "recurring": [],    # {"id", "day", "payer", "amount", "members", "memo", "weights", "start_month", "last_month"} — 기능 4 담당(반복 지출)
 }
 
 
