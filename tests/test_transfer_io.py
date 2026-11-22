@@ -14,6 +14,7 @@ import unittest
 from helpers import StoreCase
 
 from moim.common import csvio, dates, ledger
+from moim.common.queries import period_total, person_paid
 
 P = ["양정현", "신동훈", "이은경"]
 E = {
@@ -172,6 +173,82 @@ class DetectEncodingTest(unittest.TestCase):
     def test_missing_file_is_oserror(self):
         with self.assertRaises(FileNotFoundError):
             csvio.detect_encoding(os.path.join(self.dir, "none.csv"))
+
+
+class PeriodTotalTest(StoreCase):
+    """19. period_total — expenses_in 으로 고른 지출의 금액 합."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.data["members"] = [
+            {"name": "양정현", "joined": "2026-09-01", "left": None},
+            {"name": "신동훈", "joined": "2026-09-01", "left": "2026-11-30"},
+            {"name": "이은경", "joined": "2026-09-01", "left": None},
+        ]
+        self.store.data["expenses"] = [copy.deepcopy(E)]
+        self.store.data["next_id"] = 2
+
+    def add(self, **kw):
+        e = copy.deepcopy(E)
+        e.update(kw)
+        self.store.data["expenses"].append(e)
+
+    # 규격 19절 예시
+    def test_spec_examples(self):
+        s = self.store
+        self.assertEqual(period_total(s, "2026-11-01", "2026-11-30"), 9000)
+        self.assertEqual(period_total(s, "2026-11-17", "2026-11-17"), 9000)
+        self.assertEqual(period_total(s, "2026-12-01", "2026-12-31"), 0)
+        self.assertEqual(period_total(s, None, None), 9000)
+        with self.assertRaises(ValueError):
+            period_total(s, "2026-11-30", "2026-11-01")
+
+    def test_deleted_excluded(self):
+        self.store.data["expenses"][0]["deleted"] = True
+        self.assertEqual(period_total(self.store, "2026-11-01", "2026-11-30"), 0)
+
+    def test_missing_deleted_key_means_not_deleted(self):
+        del self.store.data["expenses"][0]["deleted"]
+        self.assertEqual(period_total(self.store, "2026-11-01", "2026-11-30"), 9000)
+
+    def test_both_ends_included(self):
+        # 기간은 시작일과 끝일을 모두 포함한다(규약 3장) — 월초·월말 지출, 달 밖 지출
+        self.add(id=2, date="2026-11-01", amount=1000)
+        self.add(id=3, date="2026-11-30", amount=200)
+        self.add(id=4, date="2026-10-31", amount=30)
+        self.add(id=5, date="2026-12-01", amount=4)
+        s = self.store
+        self.assertEqual(period_total(s, "2026-11-01", "2026-11-30"), 10200)
+        self.assertEqual(period_total(s, None, "2026-11-30"), 10230)
+        self.assertEqual(period_total(s, "2026-11-01", None), 10204)
+        self.assertEqual(period_total(s, None, None), 10234)
+
+    def test_no_expenses(self):
+        self.store.data["expenses"] = []
+        self.assertEqual(period_total(self.store, "2026-11-01", "2026-11-30"), 0)
+        self.assertEqual(period_total(self.store, None, None), 0)
+
+    def test_returns_int(self):
+        total = period_total(self.store, "2026-11-01", "2026-11-30")
+        self.assertIs(type(total), int)
+
+    def test_same_as_person_paid_sum(self):
+        # 보고서(기능 3)의 사람별 낸 돈 합과 같은 기간 합계가 같아야 한다
+        self.add(id=2, date="2026-11-18", amount=3000, payer="이은경")
+        self.add(id=3, date="2026-11-19", amount=1234, payer="신동훈", deleted=True)
+        s = self.store
+        self.assertEqual(period_total(s, "2026-11-01", "2026-11-30"),
+                         sum(person_paid(s, "2026-11-01", "2026-11-30").values()))
+
+    def test_does_not_change_store(self):
+        before = copy.deepcopy(self.store.data)
+        period_total(self.store, "2026-11-01", "2026-11-30")
+        self.assertEqual(self.store.data, before)
+
+    def test_bad_date(self):
+        for d in ("2026-02-30", "2026.11.01"):
+            with self.subTest(d=d), self.assertRaises(ValueError):
+                period_total(self.store, d, "2026-11-30")
 
 
 if __name__ == "__main__":

@@ -59,8 +59,14 @@ def expenses_in(store, start, end, include_deleted=False):
 
 
 def period_total(store, start, end):
-    """기간 합계. 담당: 기능 6"""
-    raise NotImplementedError("기능 6 담당이 구현한다")
+    """기간 합계. 담당: 기능 6
+
+    규격: docs/공통모듈_함수규격.md 19
+    - 합계를 따로 세지 않고 반드시 expenses_in(store, start, end) 를 거친다(기간 경계·삭제 제외가 모든 기능에서 같게)
+    - 고른 지출의 amount 합, 원 단위 int 하나. 맞는 지출이 없으면 0
+    - start·end 가 None 이면 그쪽은 제한이 없다. 오류는 expenses_in 의 ValueError 를 그대로 올린다
+    """
+    return sum(e["amount"] for e in expenses_in(store, start, end))
 
 
 def category_of(e):
