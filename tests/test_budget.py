@@ -4,9 +4,11 @@
 """
 
 import datetime as dt
+import unittest
 
 from helpers import StoreCase
 
+from moim.common.dates import months_between
 from moim.common.queries import active_members, is_member_active
 
 # 예시 자료 S 의 명부 (공통모듈_함수규격.md 2장)
@@ -137,3 +139,53 @@ class ActiveMembers(SCase):
         self.store.data["members"] = {"양정현": {}}
         with self.assertRaises(ValueError):
             active_members(self.store, "2026-11-17")
+
+
+class MonthsBetween(unittest.TestCase):
+    """17. months_between — 시작 달부터 끝 달까지 양끝 포함, 오름차순."""
+
+    def test_cross_year(self):
+        self.assertEqual(months_between((2026, 11), (2027, 1)), [(2026, 11), (2026, 12), (2027, 1)])
+
+    def test_same_month(self):
+        self.assertEqual(months_between((2026, 11), (2026, 11)), [(2026, 11)])
+
+    def test_whole_year(self):
+        result = months_between((2026, 1), (2026, 12))
+        self.assertEqual(result, [(2026, m) for m in range(1, 13)])
+
+    def test_year_range_edges(self):
+        self.assertEqual(months_between((1, 1), (1, 2)), [(1, 1), (1, 2)])
+        self.assertEqual(months_between((9999, 11), (9999, 12)), [(9999, 11), (9999, 12)])
+
+    def test_does_not_change_input(self):
+        start, end = (2026, 11), (2027, 1)
+        months_between(start, end)
+        self.assertEqual((start, end), ((2026, 11), (2027, 1)))
+
+    def test_start_after_end_is_error(self):
+        with self.assertRaises(ValueError):
+            months_between((2026, 12), (2026, 11))
+
+    def test_bad_input_is_error(self):
+        good = (2026, 11)
+        bad_values = [
+            "2026-11",       # 문자열은 parse_month 로 바꿔서
+            [2026, 11],      # tuple 이 아님
+            None,            # 빈 값
+            (),              # 길이 0
+            (2026,),         # 길이 1
+            (2026, 11, 1),   # 길이 3
+            (True, 11),      # bool
+            (2026, True),
+            (2026, 11.0),    # 정수가 아님
+            ("2026", 11),
+            (0, 11),         # 범위 밖 연도
+            (10000, 1),
+            (2026, 0),       # 범위 밖 월
+            (2026, 13),
+        ]
+        for bad in bad_values:
+            for args in ((bad, good), (good, bad)):
+                with self.subTest(args=args), self.assertRaises(ValueError):
+                    months_between(*args)
