@@ -167,8 +167,24 @@ def active_members(store, on):
 
 
 def expense_shares(e):
-    """지출 하나의 사람별 부담액. 담당: 기능 4"""
-    raise NotImplementedError("기능 4 담당이 구현한다")
+    """지출 하나의 사람별 부담액. 담당: 기능 4
+
+    money.split(amount, members, payer, weights) 의 결과를 그대로 돌려준다(나머지 1원 순서도 split 그대로).
+    명부·재적·삭제 여부는 다시 보지 않는다(기간 조회 expenses_in 이 맡는다). 지출 원본은 바꾸지 않는다.
+    """
+    if not isinstance(e, dict):
+        raise ValueError(f"지출 자료 형식이 잘못되었습니다: {e!r}")
+    for key in ("amount", "members", "payer"):
+        if key not in e:
+            raise ValueError(f"{e.get('id', '?')}번 지출에 {key} 항목이 없습니다")
+    amount, members, payer = e["amount"], e["members"], e["payer"]
+    if isinstance(amount, bool) or not isinstance(amount, int) or amount < 1:
+        raise ValueError(f"{e.get('id', '?')}번 지출의 금액이 잘못되었습니다: {amount!r}")
+    if not isinstance(members, list) or not members or not all(isinstance(m, str) and m for m in members):
+        raise ValueError(f"{e.get('id', '?')}번 지출의 참여자가 잘못되었습니다: {members!r}")
+    if not isinstance(payer, str) or not payer.strip():
+        raise ValueError(f"{e.get('id', '?')}번 지출의 낸 사람이 잘못되었습니다: {payer!r}")
+    return money.split(amount, list(members), payer, e.get("weights"))
 
 
 def member_shares(store, start, end):

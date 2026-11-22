@@ -8,7 +8,7 @@ import unittest
 from helpers import StoreCase
 
 from moim.common.money import check_weights, split
-from moim.common.queries import is_locked
+from moim.common.queries import expense_shares, is_locked
 from moim.common.store import EMPTY, Store
 
 NOV = {"start": "2026-11-01", "end": "2026-11-30"}
@@ -221,6 +221,64 @@ class SplitTest(unittest.TestCase):
         split(10001, members, "양정현", weights)
         self.assertEqual(members, self.P)
         self.assertEqual(weights, {"양정현": 2})
+
+
+class ExpenseSharesTest(unittest.TestCase):
+    """queries.expense_shares(기능 4). 함수규격 10절."""
+
+    P = ["양정현", "신동훈", "이은경"]
+
+    def expense(self, **kw):
+        e = {"id": 1, "date": "2026-11-17", "payer": "양정현", "amount": 9000, "members": list(self.P),
+             "category": "식비", "memo": "회의 후 저녁", "deleted": False, "weights": None, "recurring_id": None}
+        e.update(kw)
+        return e
+
+    def test_spec_example(self):
+        self.assertEqual(expense_shares(self.expense()), {"양정현": 3000, "신동훈": 3000, "이은경": 3000})
+
+    def test_same_as_split(self):
+        cases = [
+            dict(amount=10001, weights={"양정현": 2}),
+            dict(amount=100, payer="신동훈"),
+            dict(amount=100, payer="김철수"),        # 낸 사람이 참여자가 아니어도 계산
+            dict(amount=7, payer="이은경", weights={"신동훈": 2}),
+        ]
+        for kw in cases:
+            with self.subTest(**kw):
+                e = self.expense(**kw)
+                self.assertEqual(expense_shares(e), split(e["amount"], e["members"], e["payer"], e["weights"]))
+
+    def test_weights_missing_is_even(self):
+        e = self.expense()
+        del e["weights"]
+        self.assertEqual(expense_shares(e), {"양정현": 3000, "신동훈": 3000, "이은경": 3000})
+
+    def test_does_not_check_deleted_or_membership(self):
+        # 삭제 제외는 expenses_in(05)이, 명부 검사는 입력할 때 validate 가 맡는다
+        self.assertEqual(expense_shares(self.expense(deleted=True)), {"양정현": 3000, "신동훈": 3000, "이은경": 3000})
+
+    def test_bad_expense_raises(self):
+        no_amount = self.expense()
+        del no_amount["amount"]
+        bad_cases = [
+            None, [], {},                                     # dict 가 아님 / 빈 지출
+            no_amount,                                        # 필수 키 누락
+            self.expense(amount=0), self.expense(amount=True), self.expense(amount="9000"),
+            self.expense(members=[]), self.expense(members="양정현"), self.expense(members=["양정현", "양정현"]),
+            self.expense(payer=""), self.expense(payer=None),
+            self.expense(weights={"김철수": 1}),
+        ]
+        for e in bad_cases:
+            with self.subTest(e=e), self.assertRaises(ValueError):
+                expense_shares(e)
+
+    def test_does_not_change_expense(self):
+        e = self.expense(amount=10001, weights={"양정현": 2})
+        before = copy.deepcopy(e)
+        result = expense_shares(e)
+        result["양정현"] = 0
+        self.assertEqual(e, before)
 
 
 if __name__ == "__main__":
