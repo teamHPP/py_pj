@@ -16,6 +16,7 @@ EMPTY = {
     "next_id": 1,
     "history": [],      # {"at", "action", "id", "before", "after"} — 기능 1 담당(수정·삭제 이력)
     "locks": [],        # {"start", "end"} — 기능 4 담당(정산 확정 기간, 양끝 포함)
+    "payments": [],     # {"id", "date", "member", "amount", "memo", "source"} — 기능 5 담당(회비 입금)
 }
 
 

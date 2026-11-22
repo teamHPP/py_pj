@@ -4,12 +4,14 @@
 """
 
 import datetime as dt
+import json
 import unittest
 
 from helpers import StoreCase
 
 from moim.common.dates import months_between
 from moim.common.queries import active_members, is_member_active
+from moim.common.store import EMPTY, Store
 
 # 예시 자료 S 의 명부 (공통모듈_함수규격.md 2장)
 S_MEMBERS = [
@@ -189,3 +191,35 @@ class MonthsBetween(unittest.TestCase):
             for args in ((bad, good), (good, bad)):
                 with self.subTest(args=args), self.assertRaises(ValueError):
                     months_between(*args)
+
+
+class StorePayments(StoreCase):
+    """store.py EMPTY 의 payments 항목(기능 5). 함수규격 '기능 5가 더하는 자료 항목' 표."""
+
+    PAYMENT = {"id": 1, "date": "2026-11-02", "member": "김민수", "amount": 20000,
+               "memo": "11월 회비", "source": "manual"}
+
+    def test_new_store_has_empty_payments(self):
+        self.assertEqual(Store(self.path("new.json")).data["payments"], [])
+
+    def test_loaded_empty_store_has_empty_payments(self):
+        self.assertEqual(self.store.data["payments"], [])
+
+    def test_old_file_without_payments_gets_default(self):
+        old = {"members": [], "expenses": [], "next_id": 1}
+        with open(self.path("old.json"), "w", encoding="utf-8") as f:
+            json.dump(old, f)
+        s = Store(self.path("old.json")).load()
+        self.assertEqual(s.data["payments"], [])
+        self.assertEqual(s.data["next_id"], 1)
+
+    def test_payments_survive_save_and_load(self):
+        self.store.data["payments"].append(dict(self.PAYMENT))
+        self.store.save()
+        s = Store(self.store.path).load()
+        self.assertEqual(s.data["payments"], [self.PAYMENT])
+
+    def test_store_does_not_share_empty_payments(self):
+        self.store.data["payments"].append(dict(self.PAYMENT))
+        self.assertEqual(EMPTY["payments"], [])
+        self.assertEqual(Store(self.path("other.json")).data["payments"], [])
