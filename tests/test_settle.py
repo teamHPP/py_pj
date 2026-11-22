@@ -7,7 +7,7 @@ import unittest
 
 from helpers import StoreCase
 
-from moim.common.money import check_weights
+from moim.common.money import check_weights, split
 from moim.common.queries import is_locked
 from moim.common.store import EMPTY, Store
 
@@ -165,6 +165,62 @@ class CheckWeightsTest(unittest.TestCase):
         result = check_weights(self.P, weights)
         result["양정현"] = 99
         self.assertEqual(weights["양정현"], 2)
+
+
+class SplitTest(unittest.TestCase):
+    """money.split 비율 분배(기능 4). 함수규격 09절, 규약 2장."""
+
+    P = ["양정현", "신동훈", "이은경"]
+
+    def test_spec_examples(self):
+        self.assertEqual(split(100, self.P, payer="신동훈"), {"양정현": 33, "신동훈": 34, "이은경": 33})
+        self.assertEqual(split(10000, self.P, payer="양정현"), {"양정현": 3334, "신동훈": 3333, "이은경": 3333})
+        self.assertEqual(split(10001, self.P, "양정현", {"양정현": 2}),
+                         {"양정현": 5001, "신동훈": 2500, "이은경": 2500})
+        self.assertEqual(split(0, self.P), {"양정현": 0, "신동훈": 0, "이은경": 0})
+
+    def test_remainder_goes_payer_first_then_list_order(self):
+        # 규약 2장: 남는 원은 낸 사람이 참여자이면 낸 사람부터, 그다음은 참여자 목록 순서
+        self.assertEqual(split(7, self.P, "이은경", {"신동훈": 2}), {"양정현": 2, "신동훈": 3, "이은경": 2})
+
+    def test_payer_not_member_uses_list_order(self):
+        self.assertEqual(split(10001, self.P, "김철수", {"양정현": 2}),
+                         {"양정현": 5001, "신동훈": 2500, "이은경": 2500})
+
+    def test_sum_is_always_amount(self):
+        for amount in (0, 1, 7, 100, 9999, 10001):
+            for weights in (None, {}, {"양정현": 2}, {"양정현": 1, "신동훈": 1, "이은경": 3}, {"이은경": 7}):
+                for payer in (None, "양정현", "이은경", "김철수"):
+                    with self.subTest(amount=amount, weights=weights, payer=payer):
+                        result = split(amount, self.P, payer, weights)
+                        self.assertEqual(sum(result.values()), amount)
+                        self.assertEqual(list(result), self.P)
+
+    def test_empty_weights_same_as_even(self):
+        self.assertEqual(split(9000, self.P, weights={}), split(9000, self.P))
+        self.assertEqual(split(9000, self.P, weights=None), {"양정현": 3000, "신동훈": 3000, "이은경": 3000})
+
+    def test_bad_inputs_raise(self):
+        bad_cases = [
+            (True, self.P, None, None),             # bool 금액
+            (9000.0, self.P, None, None),           # 정수가 아닌 금액
+            ("9000", self.P, None, None),           # 문자열 금액
+            (-1, self.P, None, None),               # 음수
+            (100, [], None, None),                  # 빈 참여자
+            (100, ["양정현", "양정현"], None, None),  # 중복 참여자
+            (100, self.P, 3, None),                 # 잘못된 payer 자료형
+            (100, self.P, None, {"김철수": 1}),       # check_weights 가 거부
+            (100, self.P, None, {"양정현": 0}),       # check_weights 가 거부
+        ]
+        for args in bad_cases:
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                split(*args)
+
+    def test_does_not_change_input(self):
+        members, weights = list(self.P), {"양정현": 2}
+        split(10001, members, "양정현", weights)
+        self.assertEqual(members, self.P)
+        self.assertEqual(weights, {"양정현": 2})
 
 
 if __name__ == "__main__":
