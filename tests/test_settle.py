@@ -7,6 +7,7 @@ import unittest
 
 from helpers import StoreCase
 
+from moim.common.money import check_weights
 from moim.common.queries import is_locked
 from moim.common.store import EMPTY, Store
 
@@ -116,6 +117,54 @@ class StoreLocksTest(StoreCase):
         self.store.data["locks"].append({"start": "2026-11-01", "end": "2026-11-30"})
         self.assertEqual(EMPTY["locks"], [])
         self.assertEqual(Store(self.path("other.json")).data["locks"], [])
+
+
+class CheckWeightsTest(unittest.TestCase):
+    """money.check_weights(A1). 함수규격 4장 A1절."""
+
+    P = ["양정현", "신동훈", "이은경"]
+
+    def test_none_means_all_one(self):
+        self.assertEqual(check_weights(self.P, None), {"양정현": 1, "신동훈": 1, "이은경": 1})
+
+    def test_empty_dict_means_all_one(self):
+        self.assertEqual(check_weights(self.P, {}), {"양정현": 1, "신동훈": 1, "이은경": 1})
+
+    def test_missing_names_are_one(self):
+        self.assertEqual(check_weights(self.P, {"양정현": 2}), {"양정현": 2, "신동훈": 1, "이은경": 1})
+
+    def test_result_follows_member_order(self):
+        result = check_weights(self.P, {"이은경": 1, "양정현": 3, "신동훈": 2})
+        self.assertEqual(list(result), self.P)
+        self.assertEqual(result, {"양정현": 3, "신동훈": 2, "이은경": 1})
+
+    def test_bad_weights_raise(self):
+        bad_cases = [
+            "2:1:1",                 # dict 가 아님
+            [("양정현", 2)],          # dict 가 아님
+            {"김철수": 1},            # 참여자가 아닌 이름
+            {"양정현": 0},            # 0
+            {"양정현": -1},           # 음수
+            {"양정현": True},         # bool
+            {"양정현": 1.5},          # 정수가 아님
+            {"양정현": "2"},          # 정수가 아님
+        ]
+        for weights in bad_cases:
+            with self.subTest(weights=weights), self.assertRaises(ValueError):
+                check_weights(self.P, weights)
+
+    def test_does_not_change_input(self):
+        weights = {"양정현": 2}
+        members = list(self.P)
+        check_weights(members, weights)
+        self.assertEqual(weights, {"양정현": 2})
+        self.assertEqual(members, self.P)
+
+    def test_returns_new_dict(self):
+        weights = {"양정현": 2, "신동훈": 1, "이은경": 1}
+        result = check_weights(self.P, weights)
+        result["양정현"] = 99
+        self.assertEqual(weights["양정현"], 2)
 
 
 if __name__ == "__main__":
