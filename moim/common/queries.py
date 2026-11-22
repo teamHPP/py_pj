@@ -112,8 +112,25 @@ def _member_period(m):
 
 
 def active_members(store, on):
-    """그날의 회원 이름 목록(명부 순서). 담당: 기능 5"""
-    raise NotImplementedError("기능 5 담당이 구현한다")
+    """그날의 회원 이름 목록(명부 순서). 담당: 기능 5
+
+    규격: docs/공통모듈_함수규격.md 16
+    - 회원인지는 is_member_active 로만 판단한다(같은 기준)
+    - 명부가 비어 있거나 그날 회원이 없으면 []
+    - 날짜는 명부가 비어 있어도 먼저 검사한다. 잘못된 날짜·명부 자료는 ValueError
+    """
+    if on is None:
+        raise ValueError("날짜가 비어 있습니다")
+    day = dates.parse(on)
+    roster = store.data.get("members")
+    if not isinstance(roster, list):
+        raise ValueError("명부(members)는 목록이어야 합니다")
+    names = []
+    for m in roster:
+        if not isinstance(m, dict) or not isinstance(m.get("name"), str) or not m["name"].strip():
+            raise ValueError(f"명부 자료 형식이 잘못되었습니다: {m!r}")
+        names.append(m["name"])
+    return [name for name in names if is_member_active(store, name, day)]
 
 
 def expense_shares(e):
