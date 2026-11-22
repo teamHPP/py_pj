@@ -64,8 +64,22 @@ def period_total(store, start, end):
 
 
 def category_of(e):
-    """지출의 분류 이름. 분류가 없으면 규약의 "미분류". 담당: 기능 2"""
-    raise NotImplementedError("기능 2 담당이 구현한다")
+    """지출의 분류 이름. 분류가 없으면 규약의 "미분류". 담당: 기능 2
+
+    규격: docs/공통모듈_함수규격.md 03
+    - 앞뒤 공백을 지운 분류 이름. 키 없음·None·빈 문자열·공백뿐이면 "미분류"(rules.UNCATEGORIZED)
+    - category_fixed 는 보지 않는다. 지출 원본은 바꾸지 않는다
+    - e 가 dict 가 아님, category 가 str 도 None 도 아님 → ValueError
+    """
+    if not isinstance(e, dict):
+        raise ValueError("지출은 dict여야 합니다")
+    category = e.get("category")
+    if category is None:
+        return UNCATEGORIZED
+    if not isinstance(category, str):
+        raise ValueError(f"분류는 문자열이나 None이어야 합니다: {category!r}")
+    name = category.strip()
+    return name if name else UNCATEGORIZED
 
 
 def category_totals(store, start, end):
