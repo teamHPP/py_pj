@@ -361,5 +361,37 @@ class MemberSharesTest(StoreCase):
         result["양정현"] = 0
         self.assertEqual(self.store.data, before)
 
+
+class StoreTransfersTest(StoreCase):
+    """store.py EMPTY 의 transfers 항목(기능 4). 함수규격 '기능 4가 더하는 자료 항목' 표."""
+
+    TRANSFER = {"date": "2026-11-20", "from": "신동훈", "to": "양정현", "amount": 3000}
+
+    def test_new_store_has_empty_transfers(self):
+        self.assertEqual(Store(self.path("new.json")).data["transfers"], [])
+
+    def test_loaded_empty_store_has_empty_transfers(self):
+        self.assertEqual(self.store.data["transfers"], [])
+
+    def test_old_file_without_transfers_gets_default(self):
+        old = {"members": [], "expenses": [], "next_id": 1, "locks": [{"start": "2026-11-01", "end": "2026-11-30"}]}
+        with open(self.path("old.json"), "w", encoding="utf-8") as f:
+            json.dump(old, f)
+        s = Store(self.path("old.json")).load()
+        self.assertEqual(s.data["transfers"], [])
+        self.assertEqual(s.data["locks"], [{"start": "2026-11-01", "end": "2026-11-30"}])
+
+    def test_transfers_survive_save_and_load(self):
+        self.store.data["transfers"].append(dict(self.TRANSFER))
+        self.store.save()
+        s = Store(self.store.path).load()
+        self.assertEqual(s.data["transfers"], [self.TRANSFER])
+
+    def test_store_does_not_share_empty_transfers(self):
+        self.store.data["transfers"].append(dict(self.TRANSFER))
+        self.assertEqual(EMPTY["transfers"], [])
+        self.assertEqual(Store(self.path("other.json")).data["transfers"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
