@@ -5,11 +5,15 @@
 
 import copy
 import datetime as dt
+import os
+import pathlib
+import shutil
+import tempfile
 import unittest
 
 from helpers import StoreCase
 
-from moim.common import dates, ledger
+from moim.common import csvio, dates, ledger
 
 P = ["양정현", "신동훈", "이은경"]
 E = {
@@ -116,6 +120,58 @@ class MonthKeyTest(unittest.TestCase):
         for v in ("2026-02-30", "2026-11", "2026.11.17", "2027-02-29", "", None):
             with self.subTest(v=v), self.assertRaises(ValueError):
                 dates.month_key(v)
+
+
+
+class DetectEncodingTest(unittest.TestCase):
+    """21. detect_encoding — UTF-8(BOM 허용) 먼저, 안 되면 CP949."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def write(self, name, data):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    # 규격 21절 예시
+    def test_spec_examples(self):
+        self.assertEqual(csvio.detect_encoding(self.write("u.csv", b"name,amount\nA,9000\n")), "utf-8-sig")
+        self.assertEqual(csvio.detect_encoding(self.write("k.csv", "이름,금액\n".encode("cp949"))), "cp949")
+
+    def test_utf8_korean_with_and_without_bom(self):
+        text = "거래일자,금액\n2026-11-17,9000\n"
+        self.assertEqual(csvio.detect_encoding(self.write("bom.csv", text.encode("utf-8-sig"))), "utf-8-sig")
+        self.assertEqual(csvio.detect_encoding(self.write("nobom.csv", text.encode("utf-8"))), "utf-8-sig")
+
+    def test_empty_file(self):
+        self.assertEqual(csvio.detect_encoding(self.write("empty.csv", b"")), "utf-8-sig")
+
+    def test_accepts_pathlike(self):
+        path = pathlib.Path(self.write("k.csv", "이름\n".encode("cp949")))
+        self.assertEqual(csvio.detect_encoding(path), "cp949")
+
+    def test_does_not_change_file(self):
+        data = "이름,금액\n".encode("cp949")
+        path = self.write("k.csv", data)
+        csvio.detect_encoding(path)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), data)
+
+    def test_neither_encoding_is_error(self):
+        # 0x80·0xFF 는 UTF-8 로도 CP949 로도 풀 수 없다
+        path = self.write("bad.csv", b"name\n\x80\xff\n")
+        with self.assertRaises(ValueError) as cm:
+            csvio.detect_encoding(path)
+        self.assertIn("UTF-8 또는 CP949로 읽을 수 없습니다", str(cm.exception))
+
+    def test_missing_file_is_oserror(self):
+        with self.assertRaises(FileNotFoundError):
+            csvio.detect_encoding(os.path.join(self.dir, "none.csv"))
 
 
 if __name__ == "__main__":
