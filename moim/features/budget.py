@@ -13,6 +13,8 @@
 필요하면 함수를 더 만들어도 된다. 다른 기능 파일은 불러 쓰지 않는다.
 """
 
+import copy
+
 from ..common import dates, ledger, money
 from ..common.csvio import read_csv_rows
 from ..common.queries import active_members, category_totals, period_total
@@ -34,8 +36,32 @@ def forecast(store, month, today):
 
 
 def record_payment(store, date, member, amount, memo=""):
-    """회비 입금을 기록한다."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """회비 입금을 기록한다.
+
+    - date: 실제 있는 날짜(YYYY-MM-DD 로 저장), amount: 원 단위로 사사오입한 1원 이상
+    - member: 명부에 있는 이름(공통모듈_함수규격 "기능 5가 더하는 자료 항목" payments 표)
+    - store.data["payments"] 에 {"id", "date", "member", "amount", "memo", "source": "manual"} 를 더한다.
+      id 는 기존 id 의 최댓값 + 1. 디스크 저장은 명령 쪽(통합 실행)이 한다
+    - 돌려주는 값: 저장한 입금 기록의 복사본. 잘못된 입력은 이유를 담은 ValueError(그때 자료는 바뀌지 않음)
+    """
+    day = dates.fmt(date)
+    try:
+        won = money.to_won(amount)
+    except (ValueError, ArithmeticError):
+        raise ValueError(f"금액 형식이 잘못되었습니다: {amount!r}") from None
+    if won < 1:
+        raise ValueError(f"회비 금액은 1원 이상이어야 합니다: {amount!r}")
+    if not isinstance(member, str) or store.member(member) is None:
+        raise ValueError(f"명부에 없는 사람입니다: {member!r}")
+    if not isinstance(memo, str):
+        raise ValueError(f"메모는 문자열이어야 합니다: {memo!r}")
+    payments = store.data.get("payments")
+    if not isinstance(payments, list):
+        raise ValueError("회비 입금(payments)은 목록이어야 합니다")
+    new_id = max((p["id"] for p in payments), default=0) + 1
+    p = {"id": new_id, "date": day, "member": member, "amount": won, "memo": memo, "source": "manual"}
+    payments.append(p)
+    return copy.deepcopy(p)
 
 
 def treasury_balance(store, until=None):
