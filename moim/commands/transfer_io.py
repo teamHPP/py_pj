@@ -28,6 +28,8 @@ def add_parser(sub, period_args):
     grp = sub.add_parser(GROUP, help="가져오기·내보내기").add_subparsers(dest="cmd")
     _select_args(grp.add_parser("export-csv", help="지출을 CSV로 내보내기(엑셀용 UTF-8 BOM)"), period_args)
     _select_args(grp.add_parser("export-json", help="지출을 JSON으로 내보내기"), period_args)
+    _select_args(grp.add_parser("verify", help="내보낸 파일 합계가 기록 합계와 같은지 검사"
+                                                "(내보낼 때와 같은 기간·분류를 준다)"), period_args)
     return grp
 
 
@@ -37,6 +39,19 @@ def run(c, args, cfg, store, out):
         fn = transfer_io.export_csv if c == "export-csv" else transfer_io.export_json
         count, total = fn(store, args.path, start, end, args.category)
         out(f"내보냈습니다: {args.path} ({count}건, 합계 {money.fmt(total)}원)")
+        return False
+    if c == "verify":
+        start, end = _range(args)
+        same, file_sum, total = transfer_io.verify_export(store, args.path, start, end, args.category)
+        if same:
+            out(f"일치합니다: 파일 합계 {money.fmt(file_sum)}원 = 기록 합계 {money.fmt(total)}원")
+        else:
+            out(f"일치하지 않습니다: 파일 합계 {money.fmt(file_sum)}원, 기록 합계 {money.fmt(total)}원"
+                f" (차이 {money.fmt(file_sum - total)}원)")
+        file_count = transfer_io.file_total(args.path)[1]
+        count = transfer_io.export_count(store, start, end, args.category)
+        if file_count != count:
+            out(f"참고: 건수가 다릅니다(파일 {file_count}건, 기록 {count}건)")
         return False
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False

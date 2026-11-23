@@ -378,8 +378,8 @@ class ReadCsvRowsTest(unittest.TestCase):
                                       "출금액": "48,000", "입금액": "", "잔액": "-28000"})
 
 
-class ExportTest(StoreCase):
-    """export_csv · export_json: 기간·분류 고르기, 삭제 제외, 파일 형식."""
+class ExportData(StoreCase):
+    """내보내기 테스트 공용 자료: 삭제 제외 4건 17,000원(10월 1건, 11월 2건, 12월 1건)."""
 
     def setUp(self):
         super().setUp()
@@ -397,6 +397,10 @@ class ExportTest(StoreCase):
             e.update(r)
             self.store.data["expenses"].append(e)
         self.store.data["next_id"] = 6
+
+
+class ExportTest(ExportData):
+    """export_csv · export_json: 기간·분류 고르기, 삭제 제외, 파일 형식."""
 
     def read_csv(self, path):
         with open(path, encoding="utf-8-sig", newline="") as f:
@@ -483,6 +487,128 @@ class ExportTest(StoreCase):
         args = cli.build_parser().parse_args(["io", "export-json", self.path("m.json")])
         cli.run(args, self.cfg, self.store, out.append)
         self.assertIn("(4건, 합계 17,000원)", out[-1])
+
+
+class VerifyExportTest(ExportData):
+    """file_total · verify_export: 내보낸 파일 합계 검사."""
+
+    def write(self, name, text, encoding="utf-8"):
+        p = self.path(name)
+        with open(p, "w", encoding=encoding, newline="") as f:
+            f.write(text)
+        return p
+
+    def test_file_total_matches_export(self):
+        for name, fn in (("a.csv", transfer_io.export_csv), ("a.json", transfer_io.export_json)):
+            p = self.path(name)
+            count, total = fn(self.store, p)
+            self.assertEqual(transfer_io.file_total(p), (total, count))   # 스켈레톤: (합계, 건수)
+            self.assertEqual(transfer_io.file_total(p), (17000, 4))
+            fn(self.store, p, category="식비")
+            self.assertEqual(transfer_io.file_total(p), (10000, 2))
+
+    def test_file_total_empty(self):
+        p = self.path("e.csv")
+        transfer_io.export_csv(self.store, p, "2027-01-01", "2027-01-31")
+        self.assertEqual(transfer_io.file_total(p), (0, 0))
+        self.assertEqual(transfer_io.file_total(self.write("e.json", "[]")), (0, 0))
+        self.assertEqual(transfer_io.file_total(self.write("z.csv", "")), (0, 0))
+
+    def test_file_total_csv_forms(self):
+        # BOM 없는 UTF-8, CP949, 쉼표 금액, 대문자 확장자, 열 순서가 달라도 amount 열로 읽음
+        text = 'memo,amount\n저녁,"9,000"\n택시,1000\n'
+        self.assertEqual(transfer_io.file_total(self.write("u.csv", text)), (10000, 2))
+        self.assertEqual(transfer_io.file_total(self.write("c.csv", text, "cp949")), (10000, 2))
+        self.assertEqual(transfer_io.file_total(self.write("J.JSON", '[{"amount": 5}]')), (5, 1))
+
+    def test_file_total_bad_csv(self):
+        cases = {
+            "no_col.csv": "id,date\n1,2026-11-01\n",
+            "short.csv": "id,amount\n1,100\n2\n",
+            "long.csv": "id,amount\n1,100,9\n",
+            "word.csv": "id,amount\n1,abc\n",
+            "zero.csv": "id,amount\n1,0\n",
+            "blank.csv": "id,amount\n1,\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                transfer_io.file_total(self.write(name, text))
+        with self.assertRaisesRegex(ValueError, "3번 줄"):
+            transfer_io.file_total(self.write("line.csv", "id,amount\n1,100\n2,-5\n"))
+
+    def test_file_total_bad_json(self):
+        for text in ("{", '{"amount": 1}', "[1]", '[{"id": 1}]', '[{"amount": true}]', '[{"amount": "x"}]'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                transfer_io.file_total(self.write("b.json", text))
+
+    def test_file_total_missing_file(self):
+        with self.assertRaises(OSError):
+            transfer_io.file_total(self.path("없음.csv"))
+        with self.assertRaises(OSError):
+            transfer_io.file_total(self.path("없음.json"))
+
+    def test_verify_after_export(self):
+        for name, fn in (("v.csv", transfer_io.export_csv), ("v.json", transfer_io.export_json)):
+            p = self.path(name)
+            fn(self.store, p)
+            self.assertEqual(transfer_io.verify_export(self.store, p), (True, 17000, 17000))
+            fn(self.store, p, "2026-11-01", "2026-11-30", "교통")
+            self.assertEqual(transfer_io.verify_export(self.store, p, "2026-11-01", "2026-11-30", "교통"),
+                             (True, 6000, 6000))
+
+    def test_verify_detects_changes(self):
+        p = self.path("v.csv")
+        transfer_io.export_csv(self.store, p)
+        self.store.get_expense(2)["deleted"] = True          # 내보낸 뒤 기록이 바뀜
+        self.assertEqual(transfer_io.verify_export(self.store, p), (False, 17000, 11000))
+        transfer_io.export_csv(self.store, p, category="식비")  # 다른 조건으로 내보낸 파일
+        self.assertFalse(transfer_io.verify_export(self.store, p)[0])
+
+    def test_verify_compares_total_only(self):
+        # 스켈레톤: "내보낸 파일 합계가 원래 기록 합계와 같은가" — 건수는 보지 않는다
+        p = self.write("x.csv", "id,amount\n1,10000\n2,7000\n")   # 합계 17,000원, 2건(기록은 4건)
+        self.assertEqual(transfer_io.verify_export(self.store, p), (True, 17000, 17000))
+        self.assertEqual(transfer_io.export_count(self.store), 4)
+        self.assertEqual(transfer_io.export_count(self.store, "2026-11-01", "2026-11-30", "교통"), 1)
+
+    def test_verify_record_total_is_period_total(self):
+        # 기록 합계는 공통 조회 함수(period_total)와 같은 값 — 보고서·정산과 같은 기준
+        p = self.path("v.csv")
+        for start, end in ((None, None), ("2026-11-01", "2026-11-30"), ("2026-11-01", None)):
+            transfer_io.export_csv(self.store, p, start, end)
+            self.assertEqual(transfer_io.verify_export(self.store, p, start, end)[2],
+                             period_total(self.store, start, end))
+
+    def test_verify_does_not_change_store(self):
+        p = self.path("v.json")
+        transfer_io.export_json(self.store, p)
+        before = copy.deepcopy(self.store.data)
+        transfer_io.verify_export(self.store, p)
+        self.assertEqual(self.store.data, before)
+
+    def test_verify_command(self):
+        from moim import cli
+        p = self.path("cmd.csv")
+        transfer_io.export_csv(self.store, p, "2026-11-01", "2026-11-30")
+        out = []
+        args = cli.build_parser().parse_args(["io", "verify", p, "--month", "2026-11"])
+        self.assertFalse(cli.run(args, self.cfg, self.store, out.append))
+        args = cli.build_parser().parse_args(["io", "verify", p])
+        cli.run(args, self.cfg, self.store, out.append)
+        args = cli.build_parser().parse_args(["io", "verify", self.write("y.csv", "amount\n4000\n3000\n")])
+        cli.run(args, self.cfg, self.store, out.append)
+        self.assertEqual(out, [
+            "일치합니다: 파일 합계 7,000원 = 기록 합계 7,000원",
+            "일치하지 않습니다: 파일 합계 7,000원, 기록 합계 17,000원 (차이 -10,000원)",
+            "참고: 건수가 다릅니다(파일 2건, 기록 4건)",
+            "일치하지 않습니다: 파일 합계 7,000원, 기록 합계 17,000원 (차이 -10,000원)",
+            "참고: 건수가 다릅니다(파일 2건, 기록 4건)",
+        ])
+        out.clear()
+        args = cli.build_parser().parse_args(["io", "verify", self.write("w.csv", "amount\n10000\n7000\n")])
+        cli.run(args, self.cfg, self.store, out.append)
+        self.assertEqual(out, ["일치합니다: 파일 합계 17,000원 = 기록 합계 17,000원",
+                               "참고: 건수가 다릅니다(파일 2건, 기록 4건)"])
 
 
 if __name__ == "__main__":

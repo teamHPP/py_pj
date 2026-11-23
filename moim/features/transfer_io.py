@@ -13,9 +13,10 @@
 import csv
 import copy
 import json
+import os
 from ..common import dates, ledger, money
 from ..common.csvio import detect_encoding, read_csv_rows  # noqa: F401
-from ..common.queries import active_members, category_of, expenses_in
+from ..common.queries import active_members, category_of, expenses_in, period_total
 
 # CSV 열 순서. 열 이름은 지출 필드 이름 그대로 써서 다시 읽을 때(read_csv_rows) 연결 없이 읽히게 한다.
 CSV_FIELDS = ["id", "date", "payer", "amount", "members", "weights", "category", "memo"]
@@ -77,14 +78,80 @@ def export_json(store, path, start=None, end=None, category=None):
     return _summary(items)
 
 
+def _amount(value, where):
+    """파일에서 읽은 금액 하나. 원 단위 정수가 아니거나 1원 미만이면 ValueError(위치 포함)."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{where}: 금액이 없거나 잘못되었습니다: {value!r}")
+    try:
+        amount = money.to_won(value)
+    except ValueError:
+        raise ValueError(f"{where}: 금액 형식이 잘못되었습니다: {value!r}") from None
+    if amount < 1:
+        raise ValueError(f"{where}: 금액은 1원 이상이어야 합니다: {value!r}")
+    return amount
+
+
+def _csv_amounts(path):
+    _, rows = read_csv_rows(path)
+    amounts = []
+    for line, row in rows:
+        if "amount" not in row:
+            raise ValueError(f"CSV에 amount 열이 없습니다: {path}")
+        if None in row or None in row.values():
+            raise ValueError(f"{line}번 줄: 열 수가 머리글과 다릅니다")
+        amounts.append(_amount(row["amount"], f"{line}번 줄"))
+    return amounts
+
+
+def _json_amounts(path):
+    with open(path, encoding="utf-8-sig") as f:
+        try:
+            items = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"JSON 형식이 잘못되었습니다: {exc}") from None
+    if not isinstance(items, list):
+        raise ValueError("JSON 파일은 지출 목록([...])이어야 합니다")
+    amounts = []
+    for i, e in enumerate(items, 1):
+        if not isinstance(e, dict):
+            raise ValueError(f"{i}번째 지출: 지출은 객체({{...}})여야 합니다")
+        amounts.append(_amount(e.get("amount"), f"{i}번째 지출"))
+    return amounts
+
+
 def file_total(path):
-    """내보낸 파일의 금액 합계와 건수."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """내보낸 파일의 금액 합계와 건수.
+
+    - 돌려주는 값: (합계, 건수)
+    - 확장자가 .json 이면 JSON(export_json 형식), 아니면 CSV(export_csv 형식, read_csv_rows 로 읽음)
+    - 머리글만 있는 CSV·빈 목록 JSON 은 (0, 0)
+    - amount 열이 없음, 열 수가 다른 줄, 1원 미만이나 숫자가 아닌 금액, JSON 모양 오류는 ValueError(줄 번호 포함)
+    - 파일이 없거나 읽을 수 없으면 OSError 그대로
+    """
+    if os.fspath(path).lower().endswith(".json"):
+        amounts = _json_amounts(path)
+    else:
+        amounts = _csv_amounts(path)
+    return sum(amounts), len(amounts)
 
 
 def verify_export(store, path, start=None, end=None, category=None):
-    """내보낸 파일 합계가 원래 기록 합계와 같은가. 돌려주는 값: (같은가, 파일 합계, 기록 합계)"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """내보낸 파일 합계가 원래 기록 합계와 같은가. 돌려주는 값: (같은가, 파일 합계, 기록 합계)
+
+    - 기록 합계는 공통 조회 함수로 센다: 분류를 고르지 않으면 period_total(19),
+      분류를 고르면 규격 19 주의대로 expenses_in 결과를 category_of 로 걸러 더한다(_selected)
+    """
+    file_sum, _ = file_total(path)
+    if category is None:
+        total = period_total(store, start, end)
+    else:
+        _, total = _summary(_selected(store, start, end, category))
+    return file_sum == total, file_sum, total
+
+
+def export_count(store, start=None, end=None, category=None):
+    """내보낼 때와 같은 기준으로 고른 기록의 건수(io verify 명령이 파일 건수와 함께 보여 준다)."""
+    return len(_selected(store, start, end, category))
 
 
 def roundtrip_check(store, path, start=None, end=None, category=None):
