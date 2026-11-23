@@ -347,3 +347,68 @@ class MonthStatus(StoreCase):
                     {"budget": {"monthly": True}}, {"budget": {"monthly": "100000"}}):
             with self.subTest(cfg=cfg), self.assertRaises(ValueError):
                 budget.month_status(self.store, cfg, "2026-11")
+
+
+class TreasuryBalance(StoreCase):
+    """기본 필수: 모임 통장 잔고(입금 합계 − 지출 합계). 명부: 김민수·이서연·박지훈(helpers)."""
+
+    def spend(self, date, amount, deleted=False):
+        self.store.data["expenses"].append(
+            {"id": self.store.new_id(), "date": date, "payer": "김민수", "amount": amount, "members": list(NAMES),
+             "category": None, "memo": "", "deleted": deleted, "weights": None, "recurring_id": None})
+
+    def pay(self, date, member, amount):
+        budget.record_payment(self.store, date, member, amount)
+
+    def test_balance(self):
+        self.pay("2026-11-02", "김민수", 20000)
+        self.spend("2026-11-12", 9000)
+        self.assertEqual(budget.treasury_balance(self.store), 11000)
+
+    def test_empty_is_zero(self):
+        self.assertEqual(budget.treasury_balance(self.store), 0)
+
+    def test_until_includes_that_day(self):
+        self.pay("2026-11-02", "김민수", 20000)
+        self.pay("2026-11-20", "이서연", 20000)
+        self.spend("2026-11-12", 9000)
+        self.spend("2026-11-21", 5000)
+        self.assertEqual(budget.treasury_balance(self.store, "2026-11-01"), 0)
+        self.assertEqual(budget.treasury_balance(self.store, "2026-11-12"), 11000)          # 11-12 지출 포함
+        self.assertEqual(budget.treasury_balance(self.store, dt.date(2026, 11, 20)), 31000)  # 11-20 입금 포함
+        self.assertEqual(budget.treasury_balance(self.store), 26000)
+
+    def test_can_be_negative(self):
+        self.pay("2026-11-02", "박지훈", 5000)
+        self.spend("2026-11-03", 9000)
+        self.assertEqual(budget.treasury_balance(self.store), -4000)
+
+    def test_deleted_expense_not_counted(self):
+        self.pay("2026-11-02", "김민수", 20000)
+        self.spend("2026-11-12", 9000, deleted=True)
+        self.assertEqual(budget.treasury_balance(self.store), 20000)
+
+    def test_does_not_change_store(self):
+        self.pay("2026-11-02", "김민수", 20000)
+        self.spend("2026-11-12", 9000)
+        before = json.dumps(self.store.data, sort_keys=True)
+        budget.treasury_balance(self.store, "2026-11-30")
+        self.assertEqual(json.dumps(self.store.data, sort_keys=True), before)
+
+    def test_bad_until_is_error(self):
+        for until in ("2026-11-31", "2026.11.30", ""):
+            with self.subTest(until=until), self.assertRaises(ValueError):
+                budget.treasury_balance(self.store, until)
+
+    def test_bad_payment_data_is_error(self):
+        bad = [
+            {"id": 1, "date": "2026-11-31", "member": "김민수", "amount": 100, "memo": "", "source": "manual"},
+            {"id": 1, "date": "2026-11-02", "member": "김민수", "amount": 0, "memo": "", "source": "manual"},
+            {"id": 1, "date": "2026-11-02", "member": "김민수", "amount": "100", "memo": "", "source": "manual"},
+            {"id": 1, "member": "김민수", "amount": 100, "memo": "", "source": "manual"},
+            "20000",
+        ]
+        for p in bad:
+            self.store.data["payments"] = [p]
+            with self.subTest(p=p), self.assertRaises(ValueError):
+                budget.treasury_balance(self.store)
