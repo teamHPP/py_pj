@@ -273,3 +273,77 @@ class RecordPayment(StoreCase):
                 budget.record_payment(self.store, date, member, amount, memo)
         self.assertEqual(self.store.data["payments"], [])
         self.assertEqual([m["name"] for m in self.store.data["members"]], NAMES)
+
+
+class MonthStatus(StoreCase):
+    """기본 필수: 월 예산 설정(설정 파일), 이번 달 예산 초과 여부와 남은 금액. 예산은 helpers 의 100,000원."""
+
+    def spend(self, date, amount, deleted=False):
+        eid = self.store.new_id()
+        self.store.data["expenses"].append(
+            {"id": eid, "date": date, "payer": "김민수", "amount": amount, "members": list(NAMES),
+             "category": None, "memo": "", "deleted": deleted, "weights": None, "recurring_id": None})
+
+    def status(self, month="2026-11", today=None):
+        return budget.month_status(self.store, self.cfg, month, today)
+
+    def test_budget_comes_from_config(self):
+        s = self.status()
+        self.assertEqual((s["month"], s["budget"], s["spent"]), ("2026-11", 100000, 0))
+        self.cfg["budget"]["monthly"] = 1500000
+        self.assertEqual(self.status()["budget"], 1500000)
+
+    def test_remaining_and_not_over(self):
+        self.spend("2026-11-12", 30000)
+        s = self.status()
+        self.assertEqual((s["spent"], s["remaining"], s["over"]), (30000, 70000, False))
+
+    def test_exactly_budget_is_not_over(self):
+        self.spend("2026-11-12", 100000)
+        s = self.status()
+        self.assertEqual((s["remaining"], s["over"]), (0, False))
+
+    def test_one_won_over(self):
+        self.spend("2026-11-12", 100001)
+        s = self.status()
+        self.assertEqual((s["remaining"], s["over"]), (-1, True))
+
+    def test_month_includes_first_and_last_day(self):
+        # 규약 3: 한 달은 1일부터 말일까지, 양끝 포함
+        for date, amount in (("2026-10-31", 1), ("2026-11-01", 20), ("2026-11-30", 300), ("2026-12-01", 4000)):
+            self.spend(date, amount)
+        self.assertEqual(self.status()["spent"], 320)
+
+    def test_leap_february(self):
+        self.spend("2028-02-29", 500)
+        self.assertEqual(self.status("2028-02")["spent"], 500)
+
+    def test_deleted_expense_not_counted(self):
+        self.spend("2026-11-12", 9000, deleted=True)
+        self.assertEqual(self.status()["spent"], 0)
+
+    def test_today_limits_spending(self):
+        self.spend("2026-11-10", 1000)
+        self.spend("2026-11-20", 2000)
+        self.assertEqual(self.status(today="2026-11-10")["spent"], 1000)          # 그날 포함
+        self.assertEqual(self.status(today=dt.date(2026, 12, 5))["spent"], 3000)  # 다음 달이면 그달 전체
+        self.assertEqual(self.status(today="2026-10-31")["spent"], 0)             # 그달 전이면 0
+
+    def test_does_not_change_store(self):
+        self.spend("2026-11-12", 30000)
+        before = json.dumps(self.store.data, sort_keys=True)
+        self.status(today="2026-11-15")
+        self.assertEqual(json.dumps(self.store.data, sort_keys=True), before)
+
+    def test_bad_month_or_today_is_error(self):
+        for month in ("2026-13", "2026/11", "", None):
+            with self.subTest(month=month), self.assertRaises(ValueError):
+                self.status(month)
+        with self.assertRaises(ValueError):
+            self.status(today="2026-11-31")
+
+    def test_missing_or_bad_budget_is_error(self):
+        for cfg in ({}, {"budget": {}}, {"budget": 100000}, {"budget": {"monthly": -1}},
+                    {"budget": {"monthly": True}}, {"budget": {"monthly": "100000"}}):
+            with self.subTest(cfg=cfg), self.assertRaises(ValueError):
+                budget.month_status(self.store, cfg, "2026-11")
