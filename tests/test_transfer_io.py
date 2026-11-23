@@ -611,5 +611,109 @@ class VerifyExportTest(ExportData):
                                "참고: 건수가 다릅니다(파일 2건, 기록 4건)"])
 
 
+class ImportCsvTest(StoreCase):
+    """import_csv: CSV 가져오기, 열 이름 연결, 오류 줄 번호. 명부는 규격 2장의 S."""
+
+    HEAD = "date,payer,amount,members,weights,category,memo\n"
+
+    def setUp(self):
+        super().setUp()
+        self.store.data["members"] = [
+            {"name": "양정현", "joined": "2026-09-01", "left": None},
+            {"name": "신동훈", "joined": "2026-09-01", "left": "2026-11-30"},
+            {"name": "이은경", "joined": "2026-09-01", "left": None},
+        ]
+
+    def write(self, text, name="in.csv", encoding="utf-8"):
+        p = self.path(name)
+        with open(p, "w", encoding=encoding, newline="") as f:
+            f.write(text)
+        return p
+
+    def imp(self, text, **kw):
+        return transfer_io.import_csv(self.store, self.write(text), **kw)
+
+    def test_import_fields_and_history(self):
+        r = self.imp(self.HEAD + "2026-11-17,양정현,\"9,000\",양정현;이은경,양정현=2,식비,회의 후 저녁\n"
+                                 "2026-11-18,이은경,1000,이은경,,,\n")
+        self.assertEqual(r, {"encoding": "utf-8-sig", "added": [1, 2], "duplicates": [], "errors": []})
+        e1, e2 = self.store.data["expenses"]
+        self.assertEqual((e1["date"], e1["payer"], e1["amount"], e1["members"], e1["weights"], e1["category"],
+                          e1["memo"]), ("2026-11-17", "양정현", 9000, ["양정현", "이은경"], {"양정현": 2}, "식비",
+                                        "회의 후 저녁"))
+        self.assertEqual((e2["weights"], e2["category"], e2["memo"]), (None, None, ""))  # 빈 분류칸 → None
+        self.assertEqual([h["action"] for h in self.store.data["history"]], ["import", "import"])
+
+    def test_roundtrip_with_export(self):
+        self.imp(self.HEAD + "2026-11-17,양정현,9000,양정현;신동훈;이은경,양정현=2;이은경=1,식비,저녁\n"
+                             "2026-11-20,신동훈,4000,양정현;신동훈,,,택시\n")
+        before = copy.deepcopy(self.store.data["expenses"])
+        p = self.path("out.csv")
+        transfer_io.export_csv(self.store, p)
+        self.store.data["expenses"] = []
+        self.assertEqual(transfer_io.import_csv(self.store, p)["added"], [3, 4])  # 번호는 새로 매김
+        for old, new in zip(before, self.store.data["expenses"]):
+            old.pop("id"), new.pop("id")
+            self.assertEqual(old, new)
+
+    def test_empty_members_means_all_active(self):
+        self.imp(self.HEAD + "2026-11-30,양정현,3000,,,,\n2026-12-01,양정현,2000,,,,\n")
+        self.assertEqual(self.store.data["expenses"][0]["members"], ["양정현", "신동훈", "이은경"])
+        self.assertEqual(self.store.data["expenses"][1]["members"], ["양정현", "이은경"])   # 탈퇴 다음 날
+
+    def test_mapping_and_cp949(self):
+        text = "번호,날짜,낸 사람,금액,메모\n7,2026-11-17,양정현,9000,저녁\n"
+        p = self.write(text, "k.csv", "cp949")
+        r = transfer_io.import_csv(self.store, p, {"날짜": "date", "낸 사람": "payer", "금액": "amount",
+                                                   "메모": "memo"})
+        self.assertEqual((r["encoding"], r["added"]), ("cp949", [1]))
+        self.assertEqual(self.store.data["expenses"][0]["memo"], "저녁")
+        with self.assertRaisesRegex(ValueError, "date, payer, amount"):   # 연결 없이 읽으면 필요한 열이 없음
+            transfer_io.import_csv(self.store, p)
+
+    def test_error_rows_reported_and_rest_imported(self):
+        r = self.imp(self.HEAD + "2026-02-30,양정현,1000,,,,\n"
+                                 "2026-11-17,양정현,0,,,,\n"
+                                 "2026-11-17,없는사람,1000,,,,\n"
+                                 "2026-11-17,양정현\n"
+                                 "2026-11-17,양정현,1000,양정현,양정현=x,,\n"
+                                 "2026-12-01,양정현,1000,신동훈,,,\n"
+                                 "2026-11-17,이은경,1000,,,,정상\n")
+        self.assertEqual(r["added"], [1])
+        self.assertEqual([n for n, _ in r["errors"]], [2, 3, 4, 5, 6, 7])
+        self.assertIn("날짜", r["errors"][0][1])
+        self.assertIn("1원 이상", r["errors"][1][1])
+        self.assertIn("없는사람", r["errors"][2][1])
+        self.assertIn("열 수", r["errors"][3][1])
+        self.assertIn("비율", r["errors"][4][1])
+        self.assertIn("신동훈", r["errors"][5][1])      # 탈퇴 다음 날은 참여자 불가
+
+    def test_bad_input(self):
+        self.assertEqual(self.imp(""), {"encoding": "utf-8-sig", "added": [], "duplicates": [], "errors": []})
+        before = copy.deepcopy(self.store.data)
+        with self.assertRaises(ValueError):
+            self.imp("date,amount\n2026-11-17,1000\n")       # payer 열 없음
+        with self.assertRaises(NotImplementedError):        # 미리 보기는 아직 구현 전
+            self.imp(self.HEAD + "2026-11-17,양정현,1000,,,,\n", preview=True)
+        with self.assertRaises(OSError):
+            transfer_io.import_csv(self.store, self.path("없음.csv"))
+        self.assertEqual(self.store.data, before)
+
+    def test_import_command(self):
+        from moim import cli
+        p = self.write("날짜,낸 사람,금액\n2026-11-17,양정현,9000\n2026-11-31,양정현,1\n")
+        out = []
+        args = cli.build_parser().parse_args(["io", "import", p, "--map", "날짜=date;낸 사람=payer;금액=amount"])
+        self.assertTrue(cli.run(args, self.cfg, self.store, out.append))      # 자료를 바꿨으니 저장
+        self.assertEqual(out[0], "가져왔습니다(utf-8-sig): 1건 — 지출 번호 1")
+        self.assertTrue(out[1].startswith("오류 3번 줄: 날짜가 잘못되었습니다"))
+        out.clear()
+        args = cli.build_parser().parse_args(["io", "import", self.write("날짜\n", "e.csv"), "--map", "날짜=date"])
+        self.assertFalse(cli.run(args, self.cfg, self.store, out.append))     # 넣은 것이 없으면 저장 안 함
+        with self.assertRaises(ValueError):
+            cli.run(cli.build_parser().parse_args(["io", "import", p, "--map", "날짜"]), self.cfg, self.store,
+                    out.append)
+
+
 if __name__ == "__main__":
     unittest.main()
