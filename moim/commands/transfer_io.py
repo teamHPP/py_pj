@@ -30,10 +30,36 @@ def add_parser(sub, period_args):
     _select_args(grp.add_parser("export-json", help="지출을 JSON으로 내보내기"), period_args)
     _select_args(grp.add_parser("verify", help="내보낸 파일 합계가 기록 합계와 같은지 검사"
                                                 "(내보낼 때와 같은 기간·분류를 준다)"), period_args)
+    s = grp.add_parser("import", help="CSV 지출 가져오기(UTF-8·CP949 자동 판별)")
+    s.add_argument("path", help="CSV 파일 경로")
+    s.add_argument("--map", default="", help="열 이름 연결 '파일 열=필드;…' 예: '날짜=date;금액=amount'")
+    s.add_argument("--encoding", choices=["utf-8", "utf-8-sig", "cp949"], help="인코딩(안 주면 자동 판별)")
     return grp
 
 
+def _mapping(text):
+    """'날짜=date;금액=amount' -> {'날짜': 'date', '금액': 'amount'}. 비어 있으면 None."""
+    out = {}
+    for part in filter(None, (p.strip() for p in text.split(";"))):
+        col, sep, field = part.partition("=")
+        if not sep or not col.strip() or not field.strip():
+            raise ValueError(f"열 연결 형식이 잘못되었습니다('파일 열=필드'): {part}")
+        out[col.strip()] = field.strip()
+    return out or None
+
+
+def _lines(nums):
+    return ", ".join(str(n) for n in nums)
+
+
 def run(c, args, cfg, store, out):
+    if c == "import":
+        r = transfer_io.import_csv(store, args.path, _mapping(args.map), args.encoding)
+        out(f"가져왔습니다({r['encoding']}): {len(r['added'])}건" +
+            (f" — 지출 번호 {_lines(r['added'])}" if r["added"] else ""))
+        for line, why in r["errors"]:
+            out(f"오류 {line}번 줄: {why}")
+        return bool(r["added"])
     if c in ("export-csv", "export-json"):
         start, end = _range(args)
         fn = transfer_io.export_csv if c == "export-csv" else transfer_io.export_json

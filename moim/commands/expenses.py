@@ -27,6 +27,19 @@ def add_parser(sub, period_args):
     s.add_argument("--order", default="id", choices=["id", "date"])
     s.add_argument("--include-deleted", action="store_true")
 
+    s = grp.add_parser("edit", help="지출 수정")
+    s.add_argument("id", type=int)
+    s.add_argument("--date")
+    s.add_argument("--payer")
+    s.add_argument("--amount")
+    s.add_argument("--members", help="참여자, 예: 김민수;이서연")
+    s.add_argument("--memo")
+    s.add_argument("--weights", help="비율, 예: 김민수=2;이서연=1")
+    s.add_argument("--category")
+
+    s = grp.add_parser("delete", help="지출 삭제")
+    s.add_argument("id", type=int)
+
     return grp
 
 
@@ -49,6 +62,25 @@ def run(c, args, cfg, store, out):
             mark = " (삭제됨)" if e.get("deleted") else ""
             out(f"{e['id']}번 {e['date']} {e['payer']} {money.fmt(e['amount'])}원{mark}")
         return False
+
+    if c == "edit":
+        changes = {}
+        for field in ("date", "payer", "amount", "memo", "category"):
+            value = getattr(args, field)
+            if value is not None:
+                changes[field] = value
+        if args.members is not None:
+            changes["members"] = cliutil._members(args.members)
+        if args.weights is not None:
+            changes["weights"] = cliutil._weights(args.weights)
+        e = expenses.edit_expense(store, args.id, **changes)
+        out(f"고쳤습니다: {e['id']}번")
+        return True
+
+    if c == "delete":
+        e = expenses.delete_expense(store, args.id)
+        out(f"삭제했습니다: {e['id']}번")
+        return True
 
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False
