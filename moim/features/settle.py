@@ -20,15 +20,52 @@ from ..common import dates, ledger, money
 from ..common.queries import expense_shares, expenses_in, is_locked, member_shares, person_paid
 
 
+def _transfers_in(store, start, end):
+    """기간 안의 송금 기록을 (보낸 사람, 받은 사람, 금액)으로 돌려준다. 기간은 양끝 포함, None 이면 제한 없음."""
+    items = store.data.get("transfers", [])
+    if not isinstance(items, list):
+        raise ValueError("송금 기록(transfers)은 목록이어야 합니다")
+    first = None if start is None else dates.parse(start)
+    last = None if end is None else dates.parse(end)
+    picked = []
+    for t in items:
+        if not isinstance(t, dict) or any(k not in t for k in ("date", "from", "to", "amount")):
+            raise ValueError(f"송금 기록 형식이 잘못되었습니다(date·from·to·amount 필요): {t!r}")
+        amount = t["amount"]
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount < 1:
+            raise ValueError(f"송금 금액이 잘못되었습니다(1원 이상의 정수): {amount!r}")
+        day = dates.parse(t["date"])
+        if dates.in_period(day, day if first is None else first, day if last is None else last):
+            picked.append((t["from"], t["to"], amount))
+    return picked
+
+
 def balances(store, start, end):
     """사람마다 낸 돈, 부담할 돈, 이미 보낸·받은 송금, 잔액.
-    잔액 = 낸 돈 - 부담할 돈 + 보낸 송금 - 받은 송금. 양수면 받을 돈, 음수면 보낼 돈."""
-    raise NotImplementedError("이 함수를 구현한다")
+    잔액 = 낸 돈 - 부담할 돈 + 보낸 송금 - 받은 송금. 양수면 받을 돈, 음수면 보낼 돈.
+
+    돌려주는 값: {이름: {"paid", "owed", "sent", "received", "balance"}} (모두 원 단위 int).
+    낸 돈은 person_paid, 부담할 돈은 member_shares(나머지 1원은 split 규약)로 계산하고, 둘 다 expenses_in 의
+    기간(양끝 포함)·삭제 제외를 따른다. 정산에 나온 사람만 넣는다(순서: 부담할 돈 → 낸 돈 → 송금에 처음 나온 순서).
+    """
+    paid = person_paid(store, start, end)
+    owed = member_shares(store, start, end)
+    moves = _transfers_in(store, start, end)
+    names = list(dict.fromkeys([*owed, *paid, *(n for f, t, _ in moves for n in (f, t))]))
+    rows = {n: {"paid": paid.get(n, 0), "owed": owed.get(n, 0), "sent": 0, "received": 0} for n in names}
+    for frm, to, amount in moves:
+        rows[frm]["sent"] += amount
+        rows[to]["received"] += amount
+    for r in rows.values():
+        r["balance"] = r["paid"] - r["owed"] + r["sent"] - r["received"]
+    return rows
 
 
 def balance_sum(rows):
     """모든 사람 잔액의 합. 규칙대로라면 항상 0이다."""
-    raise NotImplementedError("이 함수를 구현한다")
+    if not isinstance(rows, dict):
+        raise ValueError(f"정산 결과는 {{이름: 행}} 형식이어야 합니다: {rows!r}")
+    return sum(r["balance"] for r in rows.values())
 
 
 def minimal_transfers(rows):
