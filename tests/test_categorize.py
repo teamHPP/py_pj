@@ -308,6 +308,66 @@ class MatchesClassifyTest(unittest.TestCase):
                     categorize.classify(expense(), bad)
 
 
+class ApplyUncategorizedTest(StoreCase):
+    """기본 필수: 분류되지 않은 지출 목록. 확장: 규칙 바꾼 뒤 전체 지출 다시 분류."""
+
+    def setUp(self):
+        super().setUp()
+        self.rules = []
+        categorize.add_rule(self.rules, "식비", ["저녁"])
+        categorize.add_rule(self.rules, "장소 대여", ["대관"])
+        self.store.data["expenses"].extend([
+            expense(id=1, category=None, memo="회의 후 저녁"),
+            expense(id=2, date="2026-11-18", category=None, memo="현수막"),
+            expense(id=3, date="2026-11-19", category="물품", memo="강당 대관"),
+        ])
+
+    def cats(self):
+        return [e.get("category") for e in self.store.data["expenses"]]
+
+    def test_apply_changes_and_history(self):
+        history = len(self.store.data["history"])
+        self.assertEqual(categorize.apply_rules(self.store, self.rules),
+                         [(1, "미분류", "식비"), (3, "물품", "장소 대여")])
+        self.assertEqual(self.cats(), ["식비", None, "장소 대여"])   # 맞는 규칙이 없으면 그대로
+        added = self.store.data["history"][history:]
+        self.assertEqual([(h["action"], h["id"]) for h in added], [("edit", 1), ("edit", 3)])
+        self.assertEqual((added[0]["before"]["category"], added[0]["after"]["category"]), (None, "식비"))
+        self.assertEqual(categorize.apply_rules(self.store, self.rules), [])   # 다시 해도 바뀔 것 없음
+
+    def test_preview_changes_nothing(self):
+        before = copy.deepcopy(self.store.data)
+        self.assertEqual(len(categorize.apply_rules(self.store, self.rules, preview=True)), 2)
+        self.assertEqual(self.store.data, before)
+
+    def test_skips_fixed_deleted_locked(self):
+        data = self.store.data
+        data["expenses"][0]["category_fixed"] = True
+        data["expenses"][1]["memo"], data["expenses"][1]["deleted"] = "저녁", True
+        data["locks"] = [{"start": "2026-11-19", "end": "2026-11-19"}]
+        self.assertEqual(categorize.apply_rules(self.store, self.rules), [])
+        self.assertEqual(self.cats(), [None, None, "물품"])
+
+    def test_apply_errors_change_nothing(self):
+        self.store.data["expenses"].append(expense(id=4, memo=3))
+        before = copy.deepcopy(self.store.data)
+        for rules, preview in ((self.rules, False), ([{"category": "식비"}], False), (self.rules, "yes")):
+            with self.assertRaises(ValueError):
+                categorize.apply_rules(self.store, rules, preview)
+        self.assertEqual(self.store.data, before)
+
+    def test_uncategorized(self):
+        data = self.store.data
+        data["expenses"].append(expense(id=4, date="2026-11-01", category="  ", memo=""))
+        data["expenses"].append(expense(id=5, category=None, deleted=True))
+        self.assertEqual([e["id"] for e in categorize.uncategorized(self.store)], [4, 1, 2])
+        categorize.apply_rules(self.store, self.rules)
+        result = categorize.uncategorized(self.store)
+        self.assertEqual([e["id"] for e in result], [4, 2])
+        result[0]["category"] = "바꿈"   # 복사본이라 원본은 그대로
+        self.assertEqual(data["expenses"][3]["category"], "  ")
+
+
 class RuleCommandsTest(StoreCase):
     """기본 필수: 규칙 추가·삭제·목록 명령 (moim cat add/remove/list)."""
 
@@ -328,6 +388,24 @@ class RuleCommandsTest(StoreCase):
         self.assertIn("2번 장소 대여", out[1])
         self.run_cmd(["cat", "remove", "1"])
         self.assertEqual([r["category"] for r in categorize.load_rules(self.cfg["rules"])], ["장소 대여"])
+
+    def test_apply_and_uncat(self):
+        self.store.data["expenses"].extend([expense(id=1, category=None, memo="회의 후 저녁"),
+                                            expense(id=2, date="2026-11-18", category=None, memo="현수막")])
+        self.assertEqual(self.run_cmd(["cat", "apply"]), (False, ["바뀌는 지출이 없습니다"]))   # 규칙 없음
+        self.run_cmd(["cat", "add", "식비", "--keywords", "저녁"])
+        changed, out = self.run_cmd(["cat", "apply", "--preview"])
+        self.assertFalse(changed)
+        self.assertEqual(out[0], "1번 미분류 → 식비")
+        self.assertIsNone(self.store.data["expenses"][0]["category"])
+        changed, out = self.run_cmd(["cat", "apply"])
+        self.assertTrue(changed)   # 자료가 바뀌었으니 통합 실행 틀이 저장한다
+        self.assertEqual(self.store.data["expenses"][0]["category"], "식비")
+        changed, out = self.run_cmd(["cat", "uncat"])
+        self.assertFalse(changed)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("2번 2026-11-18"))
+        self.assertIn("9,000원 현수막", out[0])
 
     def test_errors(self):
         with self.assertRaises(ValueError):

@@ -11,11 +11,13 @@
 필요하면 함수를 더 만들어도 된다. 다른 기능 파일은 불러 쓰지 않는다.
 """
 
+import copy
 import json
 import os
 import tempfile
 from ..common import money
-from ..common.queries import category_totals
+from ..common.queries import category_of, category_totals, expenses_in, is_locked
+from ..common.rules import UNCATEGORIZED
 
 
 def _is_amount(value):
@@ -171,7 +173,33 @@ def classify(e, rules):
 def apply_rules(store, rules, preview=False):
     """전체 지출을 다시 분류한다. 직접 정한 분류(고정)는 건너뛴다.
     돌려주는 값: 바뀌는 목록 [(번호, 이전 분류, 새 분류)]. preview=True 면 실제로 바꾸지 않는다."""
-    raise NotImplementedError("이 함수를 구현한다")
+    _check_rules(rules)
+    if not isinstance(preview, bool):
+        raise ValueError(f"preview 는 True 나 False 여야 합니다: {preview!r}")
+    items = store.data.get("expenses")
+    if not isinstance(items, list):
+        raise ValueError("지출 목록 형식이 잘못되었습니다")
+
+    # 먼저 모두 계산하고 나서 바꾼다. 중간에 오류가 나면 아무것도 바뀌지 않는다.
+    planned = []
+    for e in items:
+        if not isinstance(e, dict):
+            raise ValueError(f"지출 자료 형식이 잘못되었습니다: {e!r}")
+        if e.get("deleted", False) or e.get("category_fixed", False):
+            continue   # 삭제된 지출, 직접 정한 분류(고정)는 건너뛴다
+        if is_locked(store, e.get("date")):
+            continue   # 규약 6: 확정한 기간의 지출은 수정하지 않는다
+        new = classify(e, rules)
+        old = category_of(e)
+        if new is not None and new != old:   # 맞는 규칙이 없으면 지금 분류를 그대로 둔다
+            planned.append((e, old, new))
+
+    if not preview:
+        for e, _, new in planned:
+            before = copy.deepcopy(e)
+            e["category"] = new
+            store.record("edit", e["id"], before, copy.deepcopy(e))
+    return [(e["id"], old, new) for e, old, new in planned]
 
 
 def set_category(store, eid, category):
@@ -184,7 +212,8 @@ def unfix_category(store, eid):
 
 
 def uncategorized(store):
-    raise NotImplementedError("이 함수를 구현한다")
+    """분류가 없는("미분류") 지출 목록. 삭제된 지출은 빼고 (날짜, 번호) 순서의 복사본으로 돌려준다."""
+    return [e for e in expenses_in(store, None, None) if category_of(e) == UNCATEGORIZED]
 
 
 def overlaps(rules):
