@@ -15,6 +15,9 @@
 import copy
 import csv
 from ..common import dates, ledger, money
+from ..common.queries import is_locked
+
+_EDITABLE_FIELDS = ("date", "payer", "amount", "members", "memo", "weights", "category")
 
 
 def add_member(store, name, joined):
@@ -68,12 +71,45 @@ def edit_expense(store, eid, **changes):
 
     바꾸기 전 날짜·바꾼 뒤 날짜 둘 다 확정 기간이면 거부한다(바꾼 뒤 날짜는 validate가 본다).
     """
-    raise NotImplementedError("이 함수를 구현한다")
+    e = store.get_expense(eid)
+    if e.get("deleted", False):
+        raise ValueError(f"삭제된 지출은 수정할 수 없습니다: {eid}")
+    unknown = set(changes) - set(_EDITABLE_FIELDS)
+    if unknown:
+        raise ValueError(f"고칠 수 없는 항목입니다: {sorted(unknown)}")
+    if is_locked(store, e["date"]):
+        raise ValueError(f"확정된 기간의 지출은 수정할 수 없습니다: {e['date']}")
+
+    new_weights = changes.get("weights", e.get("weights"))
+    d, amt = ledger.validate(store, changes.get("date", e["date"]), changes.get("payer", e["payer"]),
+                              changes.get("amount", e["amount"]), changes.get("members", e["members"]),
+                              new_weights)
+    memo = changes.get("memo", e.get("memo", ""))
+    if not isinstance(memo, str):
+        raise ValueError("메모는 문자열이어야 합니다")
+    category = changes.get("category", e.get("category"))
+    if category is not None and not isinstance(category, str):
+        raise ValueError("분류는 문자열이거나 없어야 합니다")
+
+    before = copy.deepcopy(e)
+    e["date"], e["payer"], e["amount"] = d, changes.get("payer", e["payer"]), amt
+    e["members"] = copy.deepcopy(list(changes.get("members", e["members"])))
+    e["memo"], e["weights"], e["category"] = memo, copy.deepcopy(new_weights), category
+    store.record("edit", eid, before, copy.deepcopy(e))
+    return copy.deepcopy(e)
 
 
 def delete_expense(store, eid):
     """지출을 삭제 표시한다(지우지 않음). 확정 기간이면 거부한다."""
-    raise NotImplementedError("이 함수를 구현한다")
+    e = store.get_expense(eid)
+    if e.get("deleted", False):
+        raise ValueError(f"이미 삭제된 지출입니다: {eid}")
+    if is_locked(store, e["date"]):
+        raise ValueError(f"확정된 기간의 지출은 삭제할 수 없습니다: {e['date']}")
+    before = copy.deepcopy(e)
+    e["deleted"] = True
+    store.record("delete", eid, before, copy.deepcopy(e))
+    return copy.deepcopy(e)
 
 
 def restore_expense(store, eid):

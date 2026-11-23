@@ -5,6 +5,7 @@ is_member_active(기능 5)·is_locked(기능 4)·check_weights(A1, 기능 4)는 
 혹시 모를 상황을 대비해 데코레이터는 그대로 둔다).
 """
 
+import copy
 import functools
 import unittest
 
@@ -184,8 +185,77 @@ class ListExpenses(StoreCase):
         self.assertEqual(self.store.get_expense(e["id"])["amount"], 9000)
 
 
+class EditExpense(StoreCase):
+    """기본 필수: 지출 수정(번호로 지정)."""
+
+    def test_edit_amount(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        edited = expenses.edit_expense(self.store, e["id"], amount=6000)
+        self.assertEqual(edited["amount"], 6000)
+        self.assertEqual(self.store.get_expense(e["id"])["amount"], 6000)
+
+    def test_records_history_with_before_after(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        expenses.edit_expense(self.store, e["id"], amount=6000)
+        last = self.store.data["history"][-1]
+        self.assertEqual((last["action"], last["before"]["amount"], last["after"]["amount"]),
+                          ("edit", 3000, 6000))
+
+    def test_rejects_unknown_field(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        with self.assertRaises(ValueError):
+            expenses.edit_expense(self.store, e["id"], id=999)
+
+    def test_rejects_editing_deleted(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        expenses.delete_expense(self.store, e["id"])
+        with self.assertRaises(ValueError):
+            expenses.edit_expense(self.store, e["id"], amount=1)
+
+    def test_rejects_when_old_date_locked(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        self.store.data["locks"] = [{"start": "2026-11-01", "end": "2026-11-30"}]
+        with self.assertRaises(ValueError):
+            expenses.edit_expense(self.store, e["id"], amount=6000)
+
+    def test_rejects_moving_into_locked_period(self):
+        e, _ = expenses.add_expense(self.store, "2026-10-12", KIM, 3000, NAMES)
+        self.store.data["locks"] = [{"start": "2026-11-01", "end": "2026-11-30"}]
+        with self.assertRaises(ValueError):
+            expenses.edit_expense(self.store, e["id"], date="2026-11-12")
+
+    def test_failed_edit_leaves_store_unchanged(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        before = copy.deepcopy(self.store.data)
+        with self.assertRaises(ValueError):
+            expenses.edit_expense(self.store, e["id"], amount=-1)
+        self.assertEqual(self.store.data, before)
+
+
+class DeleteExpense(StoreCase):
+    """기본 필수: 지출 삭제(지우지 않고 표시만)."""
+
+    def test_marks_not_removes(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        expenses.delete_expense(self.store, e["id"])
+        self.assertEqual(len(self.store.data["expenses"]), 1)
+        self.assertTrue(self.store.get_expense(e["id"])["deleted"])
+
+    def test_rejects_double_delete(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        expenses.delete_expense(self.store, e["id"])
+        with self.assertRaises(ValueError):
+            expenses.delete_expense(self.store, e["id"])
+
+    def test_rejects_locked_delete(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        self.store.data["locks"] = [{"start": "2026-11-01", "end": "2026-11-30"}]
+        with self.assertRaises(ValueError):
+            expenses.delete_expense(self.store, e["id"])
+
+
 class ExpenseCommands(StoreCase):
-    """moim exp add/list 명령이 실제로 연결돼 있는지."""
+    """moim exp add/list/edit/delete 명령이 실제로 연결돼 있는지."""
 
     def run_cmd(self, argv):
         from moim import cli
@@ -194,15 +264,24 @@ class ExpenseCommands(StoreCase):
         changed = cli.run(args, self.cfg, self.store, out.append)
         return changed, out
 
-    def test_add_list(self):
+    def test_add_list_edit_delete(self):
         changed, out = self.run_cmd(["exp", "add", "2026-11-12", KIM, "9,000", f"{KIM};{LEE}",
                                       "--memo", "회의 후 저녁"])
         self.assertTrue(changed)
         self.assertIn("추가했습니다", out[-1])
+        eid = self.store.data["expenses"][0]["id"]
 
         changed, out = self.run_cmd(["exp", "list"])
         self.assertFalse(changed)
         self.assertEqual(len(out), 1)
+
+        changed, out = self.run_cmd(["exp", "edit", str(eid), "--amount", "6000"])
+        self.assertTrue(changed)
+        self.assertEqual(self.store.get_expense(eid)["amount"], 6000)
+
+        changed, out = self.run_cmd(["exp", "delete", str(eid)])
+        self.assertTrue(changed)
+        self.assertTrue(self.store.get_expense(eid)["deleted"])
 
 
 if __name__ == "__main__":
