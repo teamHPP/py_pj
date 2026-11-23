@@ -3,6 +3,7 @@
 import copy
 import datetime as dt
 import unittest
+from unittest import mock
 
 from helpers import StoreCase
 
@@ -234,6 +235,13 @@ class MonthlyTotalsTest(StoreCase):
                            ("2026-12", "2026-11")):   # 시작 달 > 끝 달
             with self.subTest(start=start, end=end), self.assertRaises(ValueError):
                 report.monthly_totals(self.store, start, end)
+
+    def test_reversed_months_checked_before_months_between(self):
+        # 규격 1장 ⚠·17 주의: months_between 의 ValueError 에 기대지 않는다.
+        # 채점 때 바뀐 months_between 이 거꾸로 된 달에 [] 를 돌려줘도 같은 ValueError
+        with mock.patch("moim.common.dates.months_between", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "^시작 달이 끝 달보다 뒤입니다: 2026-12 > 2026-11$"):
+                report.monthly_totals(self.store, "2026-12", "2026-11")
 
 
 if __name__ == "__main__":
