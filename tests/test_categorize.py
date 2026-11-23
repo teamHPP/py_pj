@@ -170,6 +170,28 @@ class RuleFileTest(StoreCase):
             self.assertIn("식비", f.read())   # 한글을 \uXXXX 로 바꾸지 않고 저장
         self.assertEqual([n for n in os.listdir(self.path("sub")) if n.endswith(".tmp")], [])
 
+    def test_bom_file(self):
+        # 메모장 등에서 저장해 BOM 이 붙은 규칙 파일도 읽는다
+        rules = [categorize.add_rule([], "교통", ["택시"])]
+        with open(self.path("bom.json"), "w", encoding="utf-8-sig") as f:
+            json.dump(rules, f, ensure_ascii=False)
+        self.assertEqual(categorize.load_rules(self.path("bom.json")), rules)
+
+    def test_bad_field_types(self):
+        # 손으로 고친 파일도 add_rule 과 같은 기준으로 검사한다
+        good = {"category": "식비", "keywords": ["저녁"], "priority": 0,
+                "payer": None, "min_amount": None, "max_amount": None}
+        bad = [{"category": " "}, {"keywords": "저녁"}, {"keywords": [""]}, {"keywords": [3]},
+               {"priority": "1"}, {"priority": True}, {"payer": ""}, {"min_amount": -1},
+               {"max_amount": "1000"}, {"min_amount": 5000, "max_amount": 1000},
+               {"keywords": [], "payer": None}]
+        for change in bad:
+            with self.subTest(change=change):
+                with open(self.path("bad.json"), "w", encoding="utf-8") as f:
+                    json.dump([{**good, **change}], f, ensure_ascii=False)
+                with self.assertRaises(ValueError):
+                    categorize.load_rules(self.path("bad.json"))
+
     def test_missing_file_is_empty(self):
         self.assertEqual(categorize.load_rules(self.path("none.json")), [])
 
@@ -220,6 +242,70 @@ class AddRemoveRuleTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     categorize.remove_rule(rules, index)
         self.assertEqual([r["category"] for r in rules], ["식비"])
+
+
+class MatchesClassifyTest(unittest.TestCase):
+    """기본 필수: 메모의 키워드로 지출을 분류. 우선순위·낸 사람·금액 조건도 함께 확인."""
+
+    def rule(self, category, keywords=None, **kw):
+        return categorize.add_rule([], category, keywords, **kw)
+
+    def test_keyword_any_in_memo(self):
+        r = self.rule("식비", ["저녁", "회식"])
+        self.assertTrue(categorize.matches(r, expense(memo="회의 후 저녁")))
+        self.assertTrue(categorize.matches(r, expense(memo="팀 회식")))
+        self.assertFalse(categorize.matches(r, expense(memo="현수막")))
+        self.assertFalse(categorize.matches(r, expense(memo="")))
+        self.assertFalse(categorize.matches(r, expense(memo=None)))
+
+    def test_all_conditions_must_hold(self):
+        r = self.rule("장소 대여", ["대관"], payer="양정현", min_amount=10000, max_amount=50000)
+        self.assertTrue(categorize.matches(r, expense(memo="강당 대관", amount=10000)))
+        self.assertTrue(categorize.matches(r, expense(memo="강당 대관", amount=50000)))   # 양끝 포함
+        self.assertFalse(categorize.matches(r, expense(memo="강당 대관", amount=9999)))
+        self.assertFalse(categorize.matches(r, expense(memo="강당 대관", amount=50001)))
+        self.assertFalse(categorize.matches(r, expense(memo="강당 대관", amount=20000, payer="이은경")))
+        self.assertFalse(categorize.matches(r, expense(memo="저녁", amount=20000)))
+
+    def test_without_keywords(self):
+        self.assertTrue(categorize.matches(self.rule("물품", payer="양정현"), expense(memo="")))
+        self.assertTrue(categorize.matches(self.rule("물품", min_amount=5000), expense()))
+        self.assertFalse(categorize.matches(self.rule("물품", max_amount=5000), expense()))
+
+    def test_matches_errors(self):
+        r = self.rule("식비", ["저녁"])
+        for bad in (None, {"category": "식비"}, {**r, "keywords": [""]}):
+            with self.subTest(rule=bad):
+                with self.assertRaises(ValueError):
+                    categorize.matches(bad, expense())
+        for bad in (None, expense(memo=3)):
+            with self.subTest(e=bad):
+                with self.assertRaises(ValueError):
+                    categorize.matches(r, bad)
+
+    def test_classify_priority_and_order(self):
+        rules = []
+        categorize.add_rule(rules, "식비", ["저녁"])
+        categorize.add_rule(rules, "회식", ["저녁"])               # 같은 우선순위 → 먼저 등록한 식비
+        self.assertEqual(categorize.classify(expense(), rules), "식비")
+        categorize.add_rule(rules, "행사", ["회의"], priority=1)  # 우선순위가 높으면 나중에 등록해도 이긴다
+        self.assertEqual(categorize.classify(expense(), rules), "행사")
+        categorize.add_rule(rules, "음료", ["저녁"], priority=-1)
+        self.assertEqual(categorize.classify(expense(), rules), "행사")
+
+    def test_classify_none_and_unchanged(self):
+        rules = [self.rule("교통", ["택시"])]
+        e = expense()
+        before = copy.deepcopy(e), copy.deepcopy(rules)
+        self.assertIsNone(categorize.classify(e, rules))
+        self.assertIsNone(categorize.classify(e, []))
+        self.assertEqual((e, rules), before)
+
+    def test_classify_bad_rules(self):
+        for bad in (None, [{"category": "식비"}], [{"category": "식비", "keywords": "저녁"}]):
+            with self.subTest(rules=bad):
+                with self.assertRaises(ValueError):
+                    categorize.classify(expense(), bad)
 
 
 class RuleCommandsTest(StoreCase):
