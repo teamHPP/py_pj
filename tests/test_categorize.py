@@ -246,8 +246,10 @@ class RuleCommandsTest(StoreCase):
     def test_errors(self):
         with self.assertRaises(ValueError):
             self.run_cmd(["cat", "add", "식비"])          # 조건 없음
-        with self.assertRaises(ValueError):
-            self.run_cmd(["cat", "remove", "1"])          # 없는 번호
+        with self.assertRaisesRegex(ValueError, "없는 규칙 번호입니다: 1 "):
+            self.run_cmd(["cat", "remove", "1"])          # 없는 번호는 화면 번호(1부터) 그대로 알린다
+        with self.assertRaisesRegex(ValueError, "없는 규칙 번호입니다: 0 "):
+            self.run_cmd(["cat", "remove", "0"])
         self.assertFalse(os.path.exists(self.cfg["rules"]))
 
 

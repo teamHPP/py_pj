@@ -60,6 +60,8 @@ def run(c, args, cfg, store, out):
 
     if c == "remove":
         rules = categorize.load_rules(path)
+        if not 1 <= args.number <= len(rules):
+            raise ValueError(f"없는 규칙 번호입니다: {args.number} (cat list로 번호를 확인하십시오)")
         rule = categorize.remove_rule(rules, args.number - 1)
         categorize.save_rules(path, rules)
         out(f"규칙을 삭제했습니다: {args.number}번 {_describe(rule)}")
