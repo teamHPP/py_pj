@@ -26,6 +26,11 @@ def add_parser(sub, period_args):
     s.add_argument("number", type=int, help="cat list 에 나온 규칙 번호")
 
     grp.add_parser("list", help="분류 규칙 목록")
+
+    s = grp.add_parser("apply", help="규칙으로 전체 지출 다시 분류")
+    s.add_argument("--preview", action="store_true", help="바꾸지 않고 바뀔 목록만 보기")
+
+    grp.add_parser("uncat", help="분류되지 않은 지출 목록")
     return grp
 
 
@@ -73,6 +78,24 @@ def run(c, args, cfg, store, out):
             out("분류 규칙이 없습니다")
         for i, rule in enumerate(rules, 1):
             out(f"{i}번 {_describe(rule)}")
+        return False
+
+    if c == "apply":
+        changes = categorize.apply_rules(store, categorize.load_rules(path), preview=args.preview)
+        if not changes:
+            out("바뀌는 지출이 없습니다")
+        for eid, old, new in changes:
+            out(f"{eid}번 {old} → {new}")
+        if changes:
+            out(f"{len(changes)}건을 {'바꿀 예정입니다(미리 보기)' if args.preview else '다시 분류했습니다'}")
+        return bool(changes) and not args.preview
+
+    if c == "uncat":
+        items = categorize.uncategorized(store)
+        if not items:
+            out("분류되지 않은 지출이 없습니다")
+        for e in items:
+            out(f"{e['id']}번 {e['date']} {e['payer']} {money.fmt(e['amount'])}원 {e.get('memo') or ''}".rstrip())
         return False
 
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
