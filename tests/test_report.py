@@ -1,11 +1,13 @@
-"""기능 3(월별·기간 보고서) 담당의 테스트. 공통 함수 queries.expenses_in·person_paid 의 규격(docs/공통모듈_함수규격.md 05·06절)을 확인한다."""
+"""기능 3(월별·기간 보고서) 담당의 테스트. 공통 함수 queries.expenses_in·person_paid 의 규격(docs/공통모듈_함수규격.md 05·06절)과 보고서 함수를 확인한다."""
 
+import copy
 import datetime as dt
 import unittest
 
 from helpers import StoreCase
 
-from moim.common.queries import expenses_in, person_paid
+from moim.common.queries import expenses_in, period_total, person_paid
+from moim.features import report
 
 P = ["양정현", "신동훈", "이은경"]
 
@@ -179,6 +181,59 @@ class PersonPaidTest(StoreCase):
                 self.store.data["expenses"] = [expense(1, "2026-11-17", payer=payer)]
                 with self.assertRaises(ValueError):
                     person_paid(self.store, None, None)
+
+
+class MonthlyTotalsTest(StoreCase):
+    """기본 필수: 월별 지출 합계. 지출은 store.data 에 바로 넣는다."""
+
+    def put(self, *items):
+        self.store.data["expenses"].extend(items)
+
+    def test_basic_example(self):
+        # tests/test_basic.py F3Basic.test_monthly 와 같은 자료
+        self.put(expense(1, "2026-10-15", 3000), expense(2, "2026-11-12", 6000), expense(3, "2026-11-13", 9000))
+        self.assertEqual(report.monthly_totals(self.store, "2026-11", "2026-11"), {"2026-11": 15000})
+
+    def test_every_month_in_order_with_zero(self):
+        # 지출이 없는 달(12월)도 0으로 넣고, 해가 바뀌어도 달 순서대로
+        self.put(expense(1, "2027-01-03", 500), expense(2, "2026-10-15", 3000), expense(3, "2026-11-12", 6000))
+        got = report.monthly_totals(self.store, "2026-10", "2027-01")
+        self.assertEqual(got, {"2026-10": 3000, "2026-11": 6000, "2026-12": 0, "2027-01": 500})
+        self.assertEqual(list(got), ["2026-10", "2026-11", "2026-12", "2027-01"])
+
+    def test_first_and_last_day_included(self):
+        # 규약 3장: 그달 1일과 말일 모두 포함, 앞뒤 달은 빠짐
+        self.put(expense(1, "2026-10-31", 1), expense(2, "2026-11-01", 2),
+                 expense(3, "2026-11-30", 4), expense(4, "2026-12-01", 8))
+        self.assertEqual(report.monthly_totals(self.store, "2026-11", "2026-11"), {"2026-11": 6})
+
+    def test_deleted_excluded(self):
+        # 규약 6-1: 삭제된 지출은 합계에서 빠진다
+        self.put(expense(1, "2026-11-12", 6000), expense(2, "2026-11-13", 9000, deleted=True))
+        self.assertEqual(report.monthly_totals(self.store, "2026-11", "2026-11"), {"2026-11": 6000})
+
+    def test_empty(self):
+        self.assertEqual(report.monthly_totals(self.store, "2026-11", "2026-12"), {"2026-11": 0, "2026-12": 0})
+
+    def test_same_as_period_total(self):
+        # 달마다 값이 같은 달의 period_total(19)과 같다
+        self.put(expense(1, "2026-11-12", 6000), expense(2, "2026-12-24", 1234), expense(3, "2026-12-31", 9000))
+        got = report.monthly_totals(self.store, "2026-11", "2026-12")
+        self.assertEqual(got["2026-11"], period_total(self.store, "2026-11-01", "2026-11-30"))
+        self.assertEqual(got["2026-12"], period_total(self.store, "2026-12-01", "2026-12-31"))
+
+    def test_store_not_changed(self):
+        self.put(expense(1, "2026-11-12", 6000))
+        before = copy.deepcopy(self.store.data)
+        report.monthly_totals(self.store, "2026-11", "2026-11")
+        self.assertEqual(self.store.data, before)
+
+    def test_bad_month(self):
+        for start, end in (("2026-13", "2026-12"), ("2026/11", "2026-11"), ("202611", "2026-11"),
+                           ("2026-11-01", "2026-11"), (None, "2026-11"),
+                           ("2026-12", "2026-11")):   # 시작 달 > 끝 달
+            with self.subTest(start=start, end=end), self.assertRaises(ValueError):
+                report.monthly_totals(self.store, start, end)
 
 
 if __name__ == "__main__":

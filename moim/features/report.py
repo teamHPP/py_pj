@@ -18,8 +18,19 @@ WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
 
 def monthly_totals(store, start_month, end_month):
-    """{'YYYY-MM': 합계}"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """{'YYYY-MM': 합계}
+
+    - start_month 부터 end_month 까지(둘 다 포함) 모든 달을 달 순서대로 넣는다. 지출이 없는 달은 0
+    - 지출은 expenses_in 으로 고른다(삭제 제외, 그달 1일·말일 포함). 합계는 원 단위 int
+    - 'YYYY-MM' 이 아닌 달, 시작 달 > 끝 달은 ValueError. Store 는 바꾸지 않는다
+    """
+    months = dates.months_between(dates.parse_month(start_month), dates.parse_month(end_month))
+    totals = {f"{y:04d}-{m:02d}": 0 for y, m in months}
+    first = dates.month_range(*months[0])[0]
+    last = dates.month_range(*months[-1])[1]
+    for e in expenses_in(store, first, last):
+        totals[e["date"][:7]] += e["amount"]
+    return totals
 
 
 def period_summary(store, start, end):
