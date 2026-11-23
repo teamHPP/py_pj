@@ -21,8 +21,38 @@ from ..common.queries import active_members, category_totals, period_total
 
 
 def month_status(store, cfg, month, today=None):
-    """이번 달 예산 상태. today 를 주면 그날까지의 지출만 센다."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """이번 달 예산 상태. today 를 주면 그날까지의 지출만 센다.
+
+    - month: "YYYY-MM". 기간은 그달 1일부터 말일까지(규약 3, 양끝 포함)
+    - 월 예산은 설정 파일의 cfg["budget"]["monthly"] (0 이상의 원 단위 정수)
+    - 지출은 period_total(19) 로만 센다(삭제 제외·기간 경계가 보고서·정산과 같게)
+    - today 가 그달 1일보다 앞이면 지출 0. period_total 은 시작일 > 끝일이면 ValueError 라 부르기 전에 막는다
+    - 돌려주는 값: {"month", "budget", "spent", "remaining", "over"}
+      remaining = budget - spent (넘으면 음수), over = spent > budget (정확히 예산만큼은 초과 아님)
+    """
+    start, end = dates.month_range(*dates.parse_month(month))
+    limit = monthly_budget(cfg)
+    if today is not None:
+        end = min(end, dates.parse(today))
+    spent = period_total(store, start, end) if start <= end else 0
+    return {
+        "month": dates.month_key(start),
+        "budget": limit,
+        "spent": spent,
+        "remaining": limit - spent,
+        "over": spent > limit,
+    }
+
+
+def monthly_budget(cfg):
+    """설정 파일의 월 예산 cfg["budget"]["monthly"]. 없거나 0 이상의 정수가 아니면 ValueError."""
+    section = cfg.get("budget") if isinstance(cfg, dict) else None
+    value = section.get("monthly") if isinstance(section, dict) else None
+    if value is None:
+        raise ValueError('설정 파일에 월 예산이 없습니다("budget": {"monthly": 원})')
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"월 예산은 0 이상의 원 단위 정수여야 합니다: {value!r}")
+    return value
 
 
 def category_status(store, cfg, month):
