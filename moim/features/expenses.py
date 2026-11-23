@@ -15,7 +15,6 @@
 import copy
 import csv
 from ..common import dates, ledger, money
-from ..common.queries import is_locked
 
 
 def add_member(store, name, joined):
@@ -37,20 +36,43 @@ def list_members(store):
 
 
 def add_expense(store, date, payer, amount, members, memo="", weights=None, category=None):
-    """지출을 추가한다. 돌려주는 값: (지출, 경고 목록)."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """지출을 추가한다. 돌려주는 값: (지출, 경고 목록).
+
+    먼저 ledger.duplicates 로 중복 의심을 찾아 경고 목록을 만들고(저장은 막지 않음),
+    ledger.insert 로 검사 후 저장한다. 검사 실패 시 둘 다 아무것도 안 바뀐다.
+    """
+    dup_ids = ledger.duplicates(store, date, payer, amount)
+    e = ledger.insert(store, date, payer, amount, members, memo=memo, weights=weights,
+                       category=category, action="add")
+    warnings = []
+    if dup_ids:
+        warnings.append(f"같은 날짜·낸 사람·금액의 지출이 이미 있습니다(번호: {dup_ids})")
+    return e, warnings
 
 
 def list_expenses(store, order="id", include_deleted=False):
-    raise NotImplementedError("이 함수를 구현한다")
+    """지출 목록. order: "id"(번호순) 또는 "date"(날짜순, 같으면 번호순). 독립 복사본을 돌려준다."""
+    if not isinstance(include_deleted, bool):
+        raise ValueError(f"include_deleted는 True나 False여야 합니다: {include_deleted!r}")
+    if order not in ("id", "date"):
+        raise ValueError(f"정렬 기준이 잘못되었습니다(id 또는 date): {order!r}")
+    items = store.data["expenses"]
+    if not include_deleted:
+        items = [e for e in items if not e.get("deleted", False)]
+    key = (lambda e: e["id"]) if order == "id" else (lambda e: (e["date"], e["id"]))
+    return [copy.deepcopy(e) for e in sorted(items, key=key)]
 
 
 def edit_expense(store, eid, **changes):
-    """지출을 고친다. 바꿀 수 있는 항목: date, payer, amount, members, memo, weights, category."""
+    """지출을 고친다. 바꿀 수 있는 항목: date, payer, amount, members, memo, weights, category.
+
+    바꾸기 전 날짜·바꾼 뒤 날짜 둘 다 확정 기간이면 거부한다(바꾼 뒤 날짜는 validate가 본다).
+    """
     raise NotImplementedError("이 함수를 구현한다")
 
 
 def delete_expense(store, eid):
+    """지출을 삭제 표시한다(지우지 않음). 확정 기간이면 거부한다."""
     raise NotImplementedError("이 함수를 구현한다")
 
 
