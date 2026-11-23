@@ -4,7 +4,9 @@
 """
 
 import copy
+import csv
 import datetime as dt
+import json
 import os
 import pathlib
 import shutil
@@ -15,6 +17,7 @@ from helpers import StoreCase
 
 from moim.common import csvio, dates, ledger
 from moim.common.queries import period_total, person_paid
+from moim.features import transfer_io
 
 P = ["양정현", "신동훈", "이은경"]
 E = {
@@ -373,6 +376,113 @@ class ReadCsvRowsTest(unittest.TestCase):
         self.assertEqual([n for n, _ in rows], [2, 3])
         self.assertEqual(rows[1][1], {"date": "2026.11.03", "거래시각": "19:42", "memo": "회의 후 저녁",
                                       "출금액": "48,000", "입금액": "", "잔액": "-28000"})
+
+
+class ExportTest(StoreCase):
+    """export_csv · export_json: 기간·분류 고르기, 삭제 제외, 파일 형식."""
+
+    def setUp(self):
+        super().setUp()
+        rows = [
+            dict(id=1, date="2026-10-31", payer="양정현", amount=3000, category="식비"),
+            dict(id=2, date="2026-11-01", payer="이은경", amount=6000, category="교통",
+                 weights={"양정현": 2, "이은경": 1}),
+            dict(id=3, date="2026-11-30", payer="신동훈", amount=1000, category=None, memo=""),
+            dict(id=4, date="2026-11-15", payer="양정현", amount=5000, category="식비", deleted=True),
+            dict(id=5, date="2026-12-01", payer="양정현", amount=7000, category=" 식비 "),
+        ]
+        self.store.data["expenses"] = []
+        for r in rows:
+            e = copy.deepcopy(E)
+            e.update(r)
+            self.store.data["expenses"].append(e)
+        self.store.data["next_id"] = 6
+
+    def read_csv(self, path):
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f))
+
+    def test_csv_all_excludes_deleted(self):
+        p = self.path("a.csv")
+        self.assertEqual(transfer_io.export_csv(self.store, p), (4, 17000))
+        rows = self.read_csv(p)
+        self.assertEqual([r["id"] for r in rows], ["1", "2", "3", "5"])
+        self.assertEqual(list(rows[0]), transfer_io.CSV_FIELDS)
+
+    def test_csv_has_bom_and_korean(self):
+        p = self.path("a.csv")
+        transfer_io.export_csv(self.store, p)
+        with open(p, "rb") as f:
+            raw = f.read()
+        self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
+        self.assertIn("회의 후 저녁".encode("utf-8"), raw)
+        self.assertEqual(csvio.detect_encoding(p), "utf-8-sig")
+
+    def test_csv_field_formats(self):
+        p = self.path("a.csv")
+        transfer_io.export_csv(self.store, p)
+        rows = {r["id"]: r for r in self.read_csv(p)}
+        self.assertEqual(rows["2"]["members"], "양정현;신동훈;이은경")
+        self.assertEqual(rows["2"]["weights"], "양정현=2;이은경=1")
+        self.assertEqual(rows["1"]["weights"], "")
+        self.assertEqual(rows["3"]["category"], "")
+        self.assertEqual(rows["1"]["amount"], "3000")
+
+    def test_period_both_ends_included(self):
+        p = self.path("a.csv")
+        self.assertEqual(transfer_io.export_csv(self.store, p, "2026-11-01", "2026-11-30"), (2, 7000))
+        self.assertEqual(transfer_io.export_json(self.store, p, start="2026-11-01"), (3, 14000))
+        self.assertEqual(transfer_io.export_json(self.store, p, end="2026-11-01"), (2, 9000))
+
+    def test_category(self):
+        p = self.path("a.csv")
+        self.assertEqual(transfer_io.export_csv(self.store, p, category="식비"), (2, 10000))
+        self.assertEqual(transfer_io.export_csv(self.store, p, category=" 식비"), (2, 10000))
+        self.assertEqual(transfer_io.export_csv(self.store, p, category="미분류"), (1, 1000))
+        self.assertEqual(transfer_io.export_csv(self.store, p, category="없는분류"), (0, 0))
+        self.assertEqual(transfer_io.export_json(self.store, p, "2026-11-01", "2026-11-30", "식비"), (0, 0))
+
+    def test_empty_writes_header_only(self):
+        p = self.path("e.csv")
+        self.assertEqual(transfer_io.export_csv(self.store, p, "2027-01-01", "2027-01-31"), (0, 0))
+        with open(p, encoding="utf-8-sig") as f:
+            self.assertEqual(f.read().strip(), ",".join(transfer_io.CSV_FIELDS))
+
+    def test_json_content(self):
+        p = self.path("a.json")
+        self.assertEqual(transfer_io.export_json(self.store, p), (4, 17000))
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("회의 후 저녁", text)  # ensure_ascii=False
+        data = json.loads(text)
+        self.assertEqual([e["id"] for e in data], [1, 2, 3, 5])
+        self.assertEqual(data[1], self.store.get_expense(2))
+
+    def test_does_not_change_store(self):
+        before = copy.deepcopy(self.store.data)
+        transfer_io.export_csv(self.store, self.path("a.csv"), category="식비")
+        transfer_io.export_json(self.store, self.path("a.json"))
+        self.assertEqual(self.store.data, before)
+
+    def test_errors(self):
+        p = self.path("a.csv")
+        with self.assertRaises(ValueError):
+            transfer_io.export_csv(self.store, p, "2026-11-30", "2026-11-01")
+        with self.assertRaises(ValueError):
+            transfer_io.export_csv(self.store, p, category=3)
+        with self.assertRaises(OSError):
+            transfer_io.export_json(self.store, self.path("없는폴더/a.json"))
+
+    def test_command(self):
+        from moim import cli
+        out = []
+        args = cli.build_parser().parse_args(
+            ["io", "export-csv", self.path("m.csv"), "--month", "2026-11", "--category", "교통"])
+        self.assertFalse(cli.run(args, self.cfg, self.store, out.append))
+        self.assertEqual(out, [f"내보냈습니다: {self.path('m.csv')} (1건, 합계 6,000원)"])
+        args = cli.build_parser().parse_args(["io", "export-json", self.path("m.json")])
+        cli.run(args, self.cfg, self.store, out.append)
+        self.assertIn("(4건, 합계 17,000원)", out[-1])
 
 
 if __name__ == "__main__":
