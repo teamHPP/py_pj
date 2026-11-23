@@ -14,7 +14,7 @@ import csv
 import copy
 import json
 import os
-from ..common import dates, ledger, money
+from ..common import cliutil, dates, ledger, money
 from ..common.csvio import detect_encoding, read_csv_rows  # noqa: F401
 from ..common.queries import active_members, category_of, expenses_in, period_total
 
@@ -159,10 +159,58 @@ def roundtrip_check(store, path, start=None, end=None, category=None):
     raise NotImplementedError("이 함수를 구현한다")
 
 
+IMPORT_REQUIRED = ("date", "payer", "amount")
+
+
+def _import_row(store, row):
+    """CSV 한 줄 → (date, payer, 원 금액, members, weights, memo, category). 잘못되면 이유를 담은 ValueError.
+
+    - members 칸이 없거나 비어 있으면 그날의 회원 전원(규약 4, active_members)
+    - members 는 "이름;이름2", weights 는 "이름=비율;…"(export_csv·명령행 인자와 같은 형식, cliutil 로 해석)
+    - 빈 분류칸은 None(category_of 가 "미분류"로 읽는다)
+    """
+    if None in row or None in row.values():
+        raise ValueError("열 수가 머리글과 다릅니다")
+    day = dates.fmt(row["date"])
+    payer = row["payer"].strip()
+    members = cliutil._members(row.get("members") or "") or active_members(store, day)
+    try:
+        weights = cliutil._weights((row.get("weights") or "").strip())
+    except ValueError:
+        raise ValueError(f"비율 형식이 잘못되었습니다(이름=비율;…): {row.get('weights')!r}") from None
+    day, amount = ledger.validate(store, day, payer, row["amount"], members, weights)
+    category = (row.get("category") or "").strip() or None
+    return day, payer, amount, members, weights, row.get("memo") or "", category
+
+
 def import_csv(store, path, mapping=None, encoding=None, preview=False):
     """CSV 지출을 가져온다. 돌려주는 값: {"encoding", "added": [번호], "duplicates": [줄 번호], "errors": [(줄 번호, 오류)]}
-    preview=True 면 실제로 넣지 않고 검사만 한다. 이때 added 에는 들어갈 줄 번호가 담긴다."""
-    raise NotImplementedError("이 함수를 구현한다")
+    preview=True 면 실제로 넣지 않고 검사만 한다. 이때 added 에는 들어갈 줄 번호가 담긴다.
+
+    - 읽기는 read_csv_rows(mapping: {파일 열 이름: 필드 이름}, 인코딩 판별 포함), 검사는 ledger.validate,
+      넣기는 ledger.insert(action="import"). 지출 번호는 새로 매기고 파일의 id 열은 쓰지 않는다
+    - 오류 줄은 건너뛰고 나머지는 넣는다. 파일에 date·payer·amount 열이 없으면 ValueError(아무것도 넣지 않음)
+    """
+    if preview:
+        raise NotImplementedError("가져오기 미리 보기는 아직 구현 전입니다")
+    used, rows = read_csv_rows(path, mapping, encoding)
+    missing = [f for f in IMPORT_REQUIRED if rows and f not in rows[0][1]]
+    if missing:
+        raise ValueError(f"CSV에 필요한 열이 없습니다: {', '.join(missing)} (mapping 으로 열 이름을 연결하십시오)")
+    result = {"encoding": used, "added": [], "duplicates": [], "errors": []}
+    for line, row in rows:
+        try:
+            day, payer, amount, members, weights, memo, category = _import_row(store, row)
+        except ValueError as exc:
+            result["errors"].append((line, str(exc)))
+            continue
+        try:
+            e = ledger.insert(store, day, payer, amount, members, memo, weights, category, action="import")
+        except ValueError as exc:
+            result["errors"].append((line, str(exc)))
+            continue
+        result["added"].append(e["id"])
+    return result
 
 
 def backup_all(store, path):
