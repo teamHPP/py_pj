@@ -18,12 +18,38 @@ from ..common import money
 from ..common.queries import category_totals
 
 
+def _is_amount(value):
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+
+
+def _rule_ok(rule):
+    """규칙 하나가 add_rule 이 만드는 모양과 같은 기준을 지키는가."""
+    if not isinstance(rule, dict):
+        return False
+    category, keywords = rule.get("category"), rule.get("keywords", [])
+    priority, payer = rule.get("priority", 0), rule.get("payer")
+    low, high = rule.get("min_amount"), rule.get("max_amount")
+    if not isinstance(category, str) or not category.strip():
+        return False
+    if not isinstance(keywords, list) or not all(isinstance(w, str) and w.strip() for w in keywords):
+        return False
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        return False
+    if payer is not None and (not isinstance(payer, str) or not payer.strip()):
+        return False
+    if not _is_amount(low) or not _is_amount(high):
+        return False
+    if low is not None and high is not None and low > high:
+        return False
+    return bool(keywords) or payer is not None or low is not None or high is not None
+
+
 def _check_rules(rules):
-    """규칙 목록 형식 검사. 잘못되면 ValueError."""
+    """규칙 목록 형식 검사(add_rule 과 같은 기준). 잘못되면 ValueError."""
     if not isinstance(rules, list):
         raise ValueError("규칙 목록은 list여야 합니다")
     for i, rule in enumerate(rules, 1):
-        if not isinstance(rule, dict) or not isinstance(rule.get("category"), str):
+        if not _rule_ok(rule):
             raise ValueError(f"{i}번 규칙의 형식이 잘못되었습니다: {rule!r}")
 
 
@@ -31,7 +57,7 @@ def load_rules(path):
     """규칙 파일(JSON)을 읽어 규칙 목록을 돌려준다. 파일이 아직 없으면 []."""
     if not os.path.exists(path):
         return []
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:   # 메모장 등이 붙인 BOM 이 있어도 읽는다
         try:
             rules = json.load(f)
         except json.JSONDecodeError as exc:
@@ -108,12 +134,38 @@ def remove_rule(rules, index):
 
 def matches(rule, e):
     """규칙의 조건을 모두 만족하는가. 키워드는 하나라도 메모에 있으면 만족."""
-    raise NotImplementedError("이 함수를 구현한다")
+    if not _rule_ok(rule):
+        raise ValueError(f"규칙의 형식이 잘못되었습니다: {rule!r}")
+    if not isinstance(e, dict):
+        raise ValueError("지출은 dict여야 합니다")
+    memo = e.get("memo")
+    if memo is None:
+        memo = ""
+    if not isinstance(memo, str):
+        raise ValueError(f"{e.get('id', '?')}번 지출의 메모가 잘못되었습니다: {memo!r}")
+    keywords = rule.get("keywords", [])
+    if keywords and not any(word.strip() in memo for word in keywords):
+        return False
+    if rule.get("payer") is not None and e.get("payer") != rule["payer"].strip():
+        return False
+    low, high = rule.get("min_amount"), rule.get("max_amount")
+    if low is not None or high is not None:
+        amount = e.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, int):
+            raise ValueError(f"{e.get('id', '?')}번 지출의 금액이 잘못되었습니다: {amount!r}")
+        if (low is not None and amount < low) or (high is not None and amount > high):
+            return False
+    return True
 
 
 def classify(e, rules):
     """맞는 규칙 가운데 우선순위가 가장 높은 규칙의 분류. 같으면 먼저 등록한 규칙. 없으면 None."""
-    raise NotImplementedError("이 함수를 구현한다")
+    _check_rules(rules)
+    best = None
+    for rule in rules:   # 목록 순서가 등록 순서. 우선순위가 더 클 때만 바꾸므로 같으면 먼저 등록한 규칙이 남는다
+        if matches(rule, e) and (best is None or rule.get("priority", 0) > best.get("priority", 0)):
+            best = rule
+    return None if best is None else best["category"].strip()
 
 
 def apply_rules(store, rules, preview=False):
