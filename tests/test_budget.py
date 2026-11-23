@@ -9,6 +9,7 @@ import unittest
 
 from helpers import NAMES, StoreCase
 
+from moim.common import dates
 from moim.common.dates import months_between
 from moim.features import budget
 from moim.common.queries import active_members, is_member_active
@@ -412,3 +413,62 @@ class TreasuryBalance(StoreCase):
             self.store.data["payments"] = [p]
             with self.subTest(p=p), self.assertRaises(ValueError):
                 budget.treasury_balance(self.store)
+
+
+class BudgetCommands(StoreCase):
+    """명령 `python -m moim budget status / pay / balance` (moim/commands/budget.py). 예산은 helpers 의 100,000원."""
+
+    def run_cmd(self, argv):
+        from moim import cli
+        out = []
+        args = cli.build_parser().parse_args(argv)
+        changed = cli.run(args, self.cfg, self.store, out.append)
+        return changed, out
+
+    def spend(self, date, amount):
+        self.store.data["expenses"].append(
+            {"id": self.store.new_id(), "date": date, "payer": "김민수", "amount": amount, "members": list(NAMES),
+             "category": None, "memo": "", "deleted": False, "weights": None, "recurring_id": None})
+
+    def test_status_remaining(self):
+        self.spend("2026-11-12", 30000)
+        changed, out = self.run_cmd(["budget", "status", "--month", "2026-11"])
+        self.assertFalse(changed)   # 조회만 하므로 저장하지 않음
+        self.assertEqual(out, ["2026-11 예산 100,000원 / 지출 30,000원", "남은 금액: 70,000원"])
+
+    def test_status_over(self):
+        self.spend("2026-11-12", 100001)
+        changed, out = self.run_cmd(["budget", "status", "--month", "2026-11"])
+        self.assertEqual(out[-1], "예산을 1원 넘었습니다")
+
+    def test_status_defaults_to_this_month(self):
+        changed, out = self.run_cmd(["budget", "status"])
+        self.assertTrue(out[0].startswith(dates.month_key(dates.today()) + " 예산 100,000원"))
+
+    def test_pay_records_and_saves(self):
+        changed, out = self.run_cmd(["budget", "pay", "이서연", "20,000", "--date", "2026-11-02", "--memo", "11월"])
+        self.assertTrue(changed)    # 자료를 바꿨으므로 통합 실행 틀이 저장
+        self.assertEqual(out, ["회비 입금을 기록했습니다: 1번 2026-11-02 이서연 20,000원"])
+        self.assertEqual(self.store.data["payments"][0]["memo"], "11월")
+
+    def test_pay_defaults_to_today(self):
+        self.run_cmd(["budget", "pay", "김민수", "20000"])
+        self.assertEqual(self.store.data["payments"][0]["date"], dates.fmt(dates.today()))
+
+    def test_balance(self):
+        self.run_cmd(["budget", "pay", "김민수", "20000", "--date", "2026-11-02"])
+        self.spend("2026-11-12", 9000)
+        self.spend("2026-11-20", 5000)
+        changed, out = self.run_cmd(["budget", "balance"])
+        self.assertFalse(changed)
+        self.assertEqual(out, ["모임 통장 잔고: 6,000원"])
+        changed, out = self.run_cmd(["budget", "balance", "--until", "2026-11-12"])
+        self.assertEqual(out, ["2026-11-12까지 모임 통장 잔고: 11,000원"])
+
+    def test_bad_input_raises_and_nothing_saved(self):
+        for argv in (["budget", "pay", "없는사람", "20000", "--date", "2026-11-02"],
+                     ["budget", "status", "--month", "2026-13"],
+                     ["budget", "balance", "--until", "2026-11-31"]):
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                self.run_cmd(argv)
+        self.assertEqual(self.store.data["payments"], [])
