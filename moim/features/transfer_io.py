@@ -15,16 +15,66 @@ import copy
 import json
 from ..common import dates, ledger, money
 from ..common.csvio import detect_encoding, read_csv_rows  # noqa: F401
-from ..common.queries import active_members, expenses_in
+from ..common.queries import active_members, category_of, expenses_in
+
+# CSV 열 순서. 열 이름은 지출 필드 이름 그대로 써서 다시 읽을 때(read_csv_rows) 연결 없이 읽히게 한다.
+CSV_FIELDS = ["id", "date", "payer", "amount", "members", "weights", "category", "memo"]
+
+
+def _selected(store, start, end, category):
+    """내보낼 지출: expenses_in 으로 기간을 고르고(삭제 제외), category 가 있으면 category_of 로 거른다.
+
+    category 는 category_of 와 같은 방식으로 다듬는다(앞뒤 공백 제거, 빈 문자열은 "미분류").
+    """
+    if category is not None and not isinstance(category, str):
+        raise ValueError(f"분류는 문자열이나 None이어야 합니다: {category!r}")
+    items = expenses_in(store, start, end)
+    if category is None:
+        return items
+    want = category_of({"category": category})
+    return [e for e in items if category_of(e) == want]
+
+
+def _summary(items):
+    return len(items), sum(e["amount"] for e in items)
+
+
+def _csv_row(e):
+    weights = e.get("weights")
+    return {
+        "id": e["id"],
+        "date": e["date"],
+        "payer": e["payer"],
+        "amount": e["amount"],
+        "members": ";".join(e.get("members", [])),
+        "weights": ";".join(f"{name}={w}" for name, w in weights.items()) if weights else "",
+        "category": e.get("category") or "",
+        "memo": e.get("memo", ""),
+    }
 
 
 def export_csv(store, path, start=None, end=None, category=None):
-    """CSV 로 내보낸다(엑셀에서 한글이 깨지지 않게 UTF-8 BOM). 돌려주는 값: (건수, 합계)"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """CSV 로 내보낸다(엑셀에서 한글이 깨지지 않게 UTF-8 BOM). 돌려주는 값: (건수, 합계)
+
+    - 열: CSV_FIELDS. 참여자는 "김민수;이서연", 비율은 "김민수=2;이서연=1"(명령행 인자와 같은 형식)
+    - 맞는 지출이 없어도 머리글만 있는 파일을 만들고 (0, 0)
+    """
+    items = _selected(store, start, end, category)
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        w.writeheader()
+        for e in items:
+            w.writerow(_csv_row(e))
+    return _summary(items)
 
 
 def export_json(store, path, start=None, end=None, category=None):
-    raise NotImplementedError("이 함수를 구현한다")
+    """JSON 으로 내보낸다(UTF-8, 한글 그대로). 지출 dict 목록을 그대로 쓴다. 돌려주는 값: (건수, 합계)"""
+    items = _selected(store, start, end, category)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return _summary(items)
 
 
 def file_total(path):
