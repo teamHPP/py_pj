@@ -1,11 +1,14 @@
 """기능 2(분류 규칙) 담당의 테스트. 공통 함수 queries.category_of·category_totals 의 규격(docs/공통모듈_함수규격.md 03·04절)을 확인한다."""
 
 import copy
+import json
+import os
 import unittest
 
 from helpers import StoreCase
 
 from moim.common.queries import category_of, category_totals, expenses_in
+from moim.features import categorize
 from moim.common.rules import UNCATEGORIZED
 
 P = ["양정현", "신동훈", "이은경"]
@@ -151,6 +154,101 @@ class CategoryTotalsTest(StoreCase):
         self.put(expense(id=2, category=3))
         with self.assertRaises(ValueError):
             category_totals(self.store, None, None)
+
+
+class RuleFileTest(StoreCase):
+    """기본 필수: 분류 규칙을 JSON 파일로 저장하고 읽기."""
+
+    def test_save_load_round_trip(self):
+        rules = []
+        categorize.add_rule(rules, "식비", ["저녁", "회식"], priority=2)
+        categorize.add_rule(rules, "장소 대여", payer="양정현", min_amount="10,000", max_amount=50000)
+        path = self.path("sub/rules.json")
+        categorize.save_rules(path, rules)
+        self.assertEqual(categorize.load_rules(path), rules)
+        with open(path, encoding="utf-8") as f:
+            self.assertIn("식비", f.read())   # 한글을 \uXXXX 로 바꾸지 않고 저장
+        self.assertEqual([n for n in os.listdir(self.path("sub")) if n.endswith(".tmp")], [])
+
+    def test_missing_file_is_empty(self):
+        self.assertEqual(categorize.load_rules(self.path("none.json")), [])
+
+    def test_broken_file(self):
+        for text in ("{깨짐", json.dumps({"category": "식비"}), json.dumps([{"keywords": []}])):
+            with self.subTest(text=text):
+                with open(self.path("bad.json"), "w", encoding="utf-8") as f:
+                    f.write(text)
+                with self.assertRaises(ValueError):
+                    categorize.load_rules(self.path("bad.json"))
+
+
+class AddRemoveRuleTest(unittest.TestCase):
+    """기본 필수: 규칙 추가·삭제."""
+
+    def test_add_rule_shape_and_order(self):
+        rules = []
+        first = categorize.add_rule(rules, " 식비 ", [" 저녁 ", "", "저녁", "회식"])
+        categorize.add_rule(rules, "교통", ["택시"], priority=1)
+        self.assertEqual(first, {"category": "식비", "keywords": ["저녁", "회식"], "priority": 0,
+                                 "payer": None, "min_amount": None, "max_amount": None})
+        self.assertEqual([r["category"] for r in rules], ["식비", "교통"])
+
+    def test_amounts_use_to_won(self):
+        rule = categorize.add_rule([], "물품", min_amount="1,000.5", max_amount="2,000원")
+        self.assertEqual((rule["min_amount"], rule["max_amount"]), (1001, 2000))
+
+    def test_add_rule_errors(self):
+        bad = [dict(category=""), dict(category=None, keywords=["a"]), dict(keywords="저녁"),
+               dict(keywords=[3]), dict(keywords=["a"], priority="1"), dict(keywords=["a"], priority=True),
+               dict(payer=" "), dict(min_amount=-1), dict(min_amount=5000, max_amount=1000),
+               dict(keywords=[" "])]
+        for kw in bad:
+            with self.subTest(kw=kw):
+                rules = []
+                kw = {"category": "식비", **kw}
+                with self.assertRaises(ValueError):
+                    categorize.add_rule(rules, **kw)
+                self.assertEqual(rules, [])
+
+    def test_remove_rule(self):
+        rules = []
+        categorize.add_rule(rules, "식비", ["저녁"])
+        categorize.add_rule(rules, "교통", ["택시"])
+        self.assertEqual(categorize.remove_rule(rules, 1)["category"], "교통")
+        for index in (1, -1, True, "0"):
+            with self.subTest(index=index):
+                with self.assertRaises(ValueError):
+                    categorize.remove_rule(rules, index)
+        self.assertEqual([r["category"] for r in rules], ["식비"])
+
+
+class RuleCommandsTest(StoreCase):
+    """기본 필수: 규칙 추가·삭제·목록 명령 (moim cat add/remove/list)."""
+
+    def run_cmd(self, argv):
+        from moim import cli
+        out = []
+        changed = cli.run(cli.build_parser().parse_args(argv), self.cfg, self.store, out.append)
+        return changed, out
+
+    def test_add_list_remove(self):
+        self.assertEqual(self.run_cmd(["cat", "list"]), (False, ["분류 규칙이 없습니다"]))
+        changed, out = self.run_cmd(["cat", "add", "식비", "--keywords", "저녁;회식", "--priority", "2"])
+        self.assertFalse(changed)   # 규칙은 자료 파일이 아니라 규칙 파일에 저장한다
+        self.assertIn("1번 식비", out[-1])
+        self.run_cmd(["cat", "add", "장소 대여", "--payer", "김민수", "--min", "10000"])
+        _, out = self.run_cmd(["cat", "list"])
+        self.assertEqual(len(out), 2)
+        self.assertIn("2번 장소 대여", out[1])
+        self.run_cmd(["cat", "remove", "1"])
+        self.assertEqual([r["category"] for r in categorize.load_rules(self.cfg["rules"])], ["장소 대여"])
+
+    def test_errors(self):
+        with self.assertRaises(ValueError):
+            self.run_cmd(["cat", "add", "식비"])          # 조건 없음
+        with self.assertRaises(ValueError):
+            self.run_cmd(["cat", "remove", "1"])          # 없는 번호
+        self.assertFalse(os.path.exists(self.cfg["rules"]))
 
 
 if __name__ == "__main__":

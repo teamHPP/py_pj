@@ -18,20 +18,92 @@ from ..common import money
 from ..common.queries import category_totals
 
 
+def _check_rules(rules):
+    """규칙 목록 형식 검사. 잘못되면 ValueError."""
+    if not isinstance(rules, list):
+        raise ValueError("규칙 목록은 list여야 합니다")
+    for i, rule in enumerate(rules, 1):
+        if not isinstance(rule, dict) or not isinstance(rule.get("category"), str):
+            raise ValueError(f"{i}번 규칙의 형식이 잘못되었습니다: {rule!r}")
+
+
 def load_rules(path):
-    raise NotImplementedError("이 함수를 구현한다")
+    """규칙 파일(JSON)을 읽어 규칙 목록을 돌려준다. 파일이 아직 없으면 []."""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        try:
+            rules = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"규칙 파일이 올바른 JSON이 아닙니다: {path} ({exc})") from None
+    _check_rules(rules)
+    return rules
 
 
 def save_rules(path, rules):
-    raise NotImplementedError("이 함수를 구현한다")
+    """규칙 목록을 JSON 파일로 저장한다. 임시 파일에 쓴 뒤 바꿔 끼워 저장 도중 멈춰도 파일이 깨지지 않는다."""
+    _check_rules(rules)
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".rules-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(rules, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def _amount_or_none(value, label):
+    if value is None:
+        return None
+    amount = money.to_won(value)
+    if amount < 0:
+        raise ValueError(f"{label}은 0원 이상이어야 합니다: {value}")
+    return amount
 
 
 def add_rule(rules, category, keywords=None, priority=0, payer=None, min_amount=None, max_amount=None):
-    raise NotImplementedError("이 함수를 구현한다")
+    """규칙 하나를 목록 끝에 더하고 그 규칙을 돌려준다. 목록 순서가 곧 등록 순서다."""
+    if not isinstance(rules, list):
+        raise ValueError("규칙 목록은 list여야 합니다")
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError("분류 이름을 입력하십시오")
+    if keywords is None:
+        keywords = []
+    if isinstance(keywords, str) or not isinstance(keywords, (list, tuple)):
+        raise ValueError(f"키워드는 문자열 목록이어야 합니다: {keywords!r}")
+    words = []
+    for word in keywords:
+        if not isinstance(word, str):
+            raise ValueError(f"키워드는 문자열이어야 합니다: {word!r}")
+        if word.strip() and word.strip() not in words:
+            words.append(word.strip())
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise ValueError(f"우선순위는 정수여야 합니다: {priority!r}")
+    if payer is not None and (not isinstance(payer, str) or not payer.strip()):
+        raise ValueError(f"낸 사람이 잘못되었습니다: {payer!r}")
+    low = _amount_or_none(min_amount, "최소 금액")
+    high = _amount_or_none(max_amount, "최대 금액")
+    if low is not None and high is not None and low > high:
+        raise ValueError(f"최소 금액이 최대 금액보다 큽니다: {low} > {high}")
+    if not words and payer is None and low is None and high is None:
+        raise ValueError("규칙에 조건(키워드, 낸 사람, 금액 범위)이 하나 이상 있어야 합니다")
+    rule = {"category": category.strip(), "keywords": words, "priority": priority,
+            "payer": None if payer is None else payer.strip(), "min_amount": low, "max_amount": high}
+    rules.append(rule)
+    return rule
 
 
 def remove_rule(rules, index):
-    raise NotImplementedError("이 함수를 구현한다")
+    """index 번째(0부터) 규칙을 지우고 지운 규칙을 돌려준다."""
+    if not isinstance(rules, list):
+        raise ValueError("규칙 목록은 list여야 합니다")
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(rules):
+        raise ValueError(f"없는 규칙 번호입니다: {index!r}")
+    return rules.pop(index)
 
 
 def matches(rule, e):
