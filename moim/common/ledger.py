@@ -12,10 +12,6 @@ INSERT_ACTIONS = ("add", "file_import", "recurring", "bank_import", "import", "m
 def validate(store, date, payer, amount, members, weights=None):
     """지출 한 건을 검사한다. 통과하면 (date, 원 단위 금액)을 돌려주고, 아니면 이유를 담은 ValueError.
     담당: 기능 1"""
-    if weights:
-        # 비율 검사는 A1 money.check_weights(기능 4 담당, 2단계)에 맡긴다. 아직 없으므로 당분간 거부한다.
-        raise NotImplementedError("비율(weights) 검사는 A1 money.check_weights(기능 4 담당)가 구현한다")
-
     try:
         amt = money.to_won(amount)
     except (ValueError, ArithmeticError) as exc:
@@ -29,6 +25,8 @@ def validate(store, date, payer, amount, members, weights=None):
         raise ValueError("참여자가 비어 있습니다")
     if len(set(members)) != len(members):
         raise ValueError("참여자가 중복되었습니다")
+
+    money.check_weights(members, weights)  # 비율 기준은 A1 한 곳에서만(결과값은 안 쓰고 검사만)
 
     for name in [payer, *members]:
         if not is_member_active(store, name, d):

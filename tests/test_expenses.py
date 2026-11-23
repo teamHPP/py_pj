@@ -1,8 +1,8 @@
 """기능 1 바닥 함수(ledger.validate, ledger.insert) 테스트.
 
-is_member_active(기능 5)·is_locked(기능 4)는 아직 구현 전이라, 그 둘을 실제로
-거쳐야 하는 테스트는 @basic 으로 감싸 "아직 구현 전"이면 건너뛴다(에러 아님).
-금액·날짜·참여자 형식 검사처럼 그 둘을 거치지 않고도 확인되는 부분은 바로 돈다.
+is_member_active(기능 5)·is_locked(기능 4)·check_weights(A1, 기능 4)는 이제 전부
+병합돼 있어서 @basic 으로 감싼 테스트도 실제로 돈다(더는 건너뛸 일이 없지만,
+혹시 모를 상황을 대비해 데코레이터는 그대로 둔다).
 """
 
 import functools
@@ -60,10 +60,14 @@ class ValidateFormatChecks(StoreCase):
         with self.assertRaises(ValueError):
             ledger.validate(self.store, "2026-11-12", KIM, 9000, [KIM, KIM, LEE])
 
-    def test_weights_not_ready_yet(self):
-        # A1 money.check_weights(기능 4, 2단계)가 아직 없어서 당분간 거부한다.
-        with self.assertRaises(NotImplementedError):
-            ledger.validate(self.store, "2026-11-12", KIM, 9000, NAMES, weights={KIM: 2})
+    def test_rejects_weights_for_non_participant(self):
+        # money.check_weights(A1)가 검사 — 참여자 목록(members)만 보고 거부, 명부는 안 본다.
+        with self.assertRaises(ValueError):
+            ledger.validate(self.store, "2026-11-12", KIM, 9000, NAMES, weights={"없는사람": 1})
+
+    def test_rejects_bad_weight_ratio(self):
+        with self.assertRaises(ValueError):
+            ledger.validate(self.store, "2026-11-12", KIM, 9000, NAMES, weights={KIM: 0})
 
 
 class ValidateAndInsertWithMembership(StoreCase):
@@ -109,6 +113,17 @@ class ValidateAndInsertWithMembership(StoreCase):
         with self.assertRaises(ValueError):
             ledger.insert(self.store, "2026-11-12", KIM, 9000, NAMES, action="이상한값")
         self.assertEqual(self.store.data["next_id"], next_id)
+
+    @basic
+    def test_validate_accepts_weights(self):
+        d, amt = ledger.validate(self.store, "2026-11-12", KIM, 10001, NAMES, weights={KIM: 2})
+        self.assertEqual((d, amt), ("2026-11-12", 10001))
+
+    @basic
+    def test_insert_stores_raw_weights(self):
+        # insert 는 weights 를 받은 그대로 저장한다(정규화는 쓰는 쪽(expense_shares)이 할 때 한다).
+        e = ledger.insert(self.store, "2026-11-12", KIM, 10001, NAMES, weights={KIM: 2})
+        self.assertEqual(e["weights"], {KIM: 2})
 
 
 if __name__ == "__main__":
