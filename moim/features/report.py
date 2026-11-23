@@ -38,7 +38,25 @@ def monthly_totals(store, start_month, end_month):
 
 
 def period_summary(store, start, end):
-    raise NotImplementedError("이 함수를 구현한다")
+    """기간 합계·분류별 합계·사람별(낸 돈) 합계.
+
+    돌려주는 값: {"total": 원, "count": 건수, "by_category": {분류: 원}, "by_person": {낸 사람: 원}}
+    - 기간은 시작일·끝일 포함(규약 3), 삭제된 지출은 뺀다. start·end 가 None 이면 그쪽은 제한이 없다
+    - total 은 period_total(19), 분류별은 category_totals(04), 사람별은 person_paid(06) 로 센다
+      (세 값 모두 expenses_in 을 거쳐서 보고서·정산·내보내기와 같은 기준)
+    - key 순서는 그 기간 지출에서 처음 나온 순서. 지출이 없으면 total·count 는 0, 나머지는 {}
+    - 시작일 > 끝일은 부르기 전에 직접 확인해 ValueError(규격 1장 ⚠). 잘못된 날짜·지출 자료는 각 함수의 ValueError
+    - Store 는 바꾸지 않는다
+    """
+    if start is not None and end is not None and dates.parse(start) > dates.parse(end):
+        raise ValueError(f"시작일이 끝일보다 늦습니다: {dates.fmt(start)} > {dates.fmt(end)}")
+    by_category = category_totals(store, start, end)
+    return {
+        "total": period_total(store, start, end),
+        "count": sum(c["count"] for c in by_category.values()),
+        "by_category": {name: c["amount"] for name, c in by_category.items()},
+        "by_person": person_paid(store, start, end),
+    }
 
 
 def month_over_month(store, month):
