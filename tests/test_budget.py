@@ -7,9 +7,10 @@ import datetime as dt
 import json
 import unittest
 
-from helpers import StoreCase
+from helpers import NAMES, StoreCase
 
 from moim.common.dates import months_between
+from moim.features import budget
 from moim.common.queries import active_members, is_member_active
 from moim.common.store import EMPTY, Store
 
@@ -223,3 +224,52 @@ class StorePayments(StoreCase):
         self.store.data["payments"].append(dict(self.PAYMENT))
         self.assertEqual(EMPTY["payments"], [])
         self.assertEqual(Store(self.path("other.json")).data["payments"], [])
+
+
+class RecordPayment(StoreCase):
+    """기본 필수: 회비 입금 기록(누가 언제 얼마). 명부: 김민수·이서연·박지훈(helpers)."""
+
+    def test_record(self):
+        p = budget.record_payment(self.store, "2026-11-02", "이서연", "20,000", "11월 회비")
+        self.assertEqual(p, {"id": 1, "date": "2026-11-02", "member": "이서연", "amount": 20000,
+                             "memo": "11월 회비", "source": "manual"})
+        self.assertEqual(self.store.data["payments"], [p])
+
+    def test_ids_increase_from_max(self):
+        budget.record_payment(self.store, "2026-11-02", "이서연", 20000)
+        self.store.data["payments"][0]["id"] = 7
+        self.assertEqual(budget.record_payment(self.store, "2026-11-03", "김민수", 20000)["id"], 8)
+
+    def test_date_and_amount_are_normalized(self):
+        p = budget.record_payment(self.store, dt.date(2026, 11, 2), "박지훈", "2.5")
+        self.assertEqual((p["date"], p["amount"]), ("2026-11-02", 3))   # 규약 1: 사사오입
+        self.assertEqual(budget.record_payment(self.store, "2026-11-02", "박지훈", 2.4)["amount"], 2)
+
+    def test_default_memo_and_source(self):
+        p = budget.record_payment(self.store, "2026-11-02", "김민수", 20000)
+        self.assertEqual((p["memo"], p["source"]), ("", "manual"))
+
+    def test_returns_copy(self):
+        p = budget.record_payment(self.store, "2026-11-02", "김민수", 20000)
+        p["amount"] = 1
+        self.assertEqual(self.store.data["payments"][0]["amount"], 20000)
+
+    def test_bad_input_is_rejected_and_nothing_saved(self):
+        cases = [
+            ("2026-11-31", "이서연", 20000, ""),      # 없는 날짜
+            ("2026.11.02", "이서연", 20000, ""),      # 형식이 틀린 날짜
+            ("2026-11-02", "이서연", 0, ""),          # 0원
+            ("2026-11-02", "이서연", -100, ""),       # 음수
+            ("2026-11-02", "이서연", "0.4", ""),      # 사사오입하면 0원
+            ("2026-11-02", "이서연", "이만원", ""),    # 숫자가 아님
+            ("2026-11-02", "이서연", True, ""),       # bool
+            ("2026-11-02", "이서연", "inf", ""),      # 무한대
+            ("2026-11-02", "없는사람", 20000, ""),    # 명부에 없음
+            ("2026-11-02", None, 20000, ""),
+            ("2026-11-02", "이서연", 20000, None),    # 메모가 문자열이 아님
+        ]
+        for date, member, amount, memo in cases:
+            with self.subTest(case=(date, member, amount, memo)), self.assertRaises(ValueError):
+                budget.record_payment(self.store, date, member, amount, memo)
+        self.assertEqual(self.store.data["payments"], [])
+        self.assertEqual([m["name"] for m in self.store.data["members"]], NAMES)
