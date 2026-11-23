@@ -5,11 +5,15 @@ import datetime as dt
 import json
 import unittest
 
-from helpers import StoreCase
+from helpers import NAMES, StoreCase
 
+from moim import cli
 from moim.common.money import check_weights, split
 from moim.common.queries import expense_shares, expenses_in, is_locked, member_shares
 from moim.common.store import EMPTY, Store
+from moim.features.settle import balance_sum, balances
+
+KIM, LEE, PARK = NAMES
 
 NOV = {"start": "2026-11-01", "end": "2026-11-30"}
 
@@ -426,6 +430,134 @@ class StoreRecurringTest(StoreCase):
         self.assertEqual(EMPTY["recurring"], [])
         self.assertEqual(Store(self.path("other.json")).data["recurring"], [])
 
+
+class BalancesTest(StoreCase):
+    """기능 4 기본 필수: 낸 돈·부담할 돈·잔액, 나머지 1원 규약, 정산 기간, 잔액 합 0 검사.
+    기능 1의 add_expense 를 기다리지 않도록 지출을 store.data 에 직접 넣는다(팀원별_구현가이드 '다른 사람을 기다리지 않는 법')."""
+
+    S, E = "2026-11-10", "2026-11-20"
+
+    def put(self, eid, date, payer, amount, members=None, **kw):
+        e = {"id": eid, "date": date, "payer": payer, "amount": amount, "members": list(members or NAMES),
+             "category": None, "memo": "", "deleted": False, "weights": None, "recurring_id": None}
+        e.update(kw)
+        self.store.data["expenses"].append(e)
+
+    # 1. 사람마다 낸 돈, 부담할 돈, 잔액
+    def test_paid_owed_balance(self):
+        # test_basic F4Basic.test_balance 와 같은 값
+        self.put(1, "2026-11-12", KIM, 9000)
+        rows = balances(self.store, self.S, self.E)
+        self.assertEqual(rows[KIM], {"paid": 9000, "owed": 3000, "sent": 0, "received": 0, "balance": 6000})
+        self.assertEqual(rows[LEE]["balance"], -3000)   # 음수면 보낼 돈
+        self.assertEqual(list(rows), NAMES)
+
+    def test_even_split_owed(self):
+        # test_basic F4Basic.test_even_split 과 같은 값
+        self.put(1, "2026-11-12", LEE, 6000)
+        self.assertEqual({n: r["owed"] for n, r in balances(self.store, self.S, self.E).items()},
+                         {KIM: 2000, LEE: 2000, PARK: 2000})
+
+    def test_payer_who_is_not_participant(self):
+        self.put(1, "2026-11-12", KIM, 6000, members=[LEE, PARK])
+        rows = balances(self.store, self.S, self.E)
+        self.assertEqual(rows[KIM], {"paid": 6000, "owed": 0, "sent": 0, "received": 0, "balance": 6000})
+        self.assertEqual(list(rows), [LEE, PARK, KIM])
+
+    # 2. 나머지 1원은 규약대로(낸 사람부터, 그다음 참여자 목록 순서)
+    def test_remainder_follows_rule(self):
+        self.put(1, "2026-11-12", LEE, 10000)
+        rows = balances(self.store, self.S, self.E)
+        self.assertEqual({n: r["owed"] for n, r in rows.items()}, {KIM: 3333, LEE: 3334, PARK: 3333})
+        self.put(2, "2026-11-13", KIM, 10001, weights={KIM: 2})
+        rows = balances(self.store, self.S, self.E)
+        self.assertEqual({n: r["owed"] for n, r in rows.items()}, {KIM: 3333 + 5001, LEE: 3334 + 2500, PARK: 3333 + 2500})
+
+    # 3. 정산 기간 지정(양끝 포함, 삭제 제외)
+    def test_period(self):
+        # test_basic F4Basic.test_period 와 같은 값
+        self.put(1, "2026-11-05", KIM, 3000)
+        self.put(2, "2026-11-12", KIM, 6000)
+        self.assertEqual(balances(self.store, self.S, self.E)[KIM]["paid"], 6000)
+
+    def test_period_ends_included_and_deleted_excluded(self):
+        self.put(1, "2026-11-10", KIM, 300)
+        self.put(2, "2026-11-20", KIM, 600)
+        self.put(3, "2026-11-21", KIM, 9000)
+        self.put(4, "2026-11-15", KIM, 9000, deleted=True)
+        self.assertEqual(balances(self.store, self.S, self.E)[KIM]["paid"], 900)
+        self.assertEqual(balances(self.store, None, None)[KIM]["paid"], 9900)
+
+    def test_empty_period_and_bad_period(self):
+        self.put(1, "2026-11-12", KIM, 9000)
+        self.assertEqual(balances(self.store, "2026-12-01", "2026-12-31"), {})
+        with self.assertRaises(ValueError):
+            balances(self.store, self.E, self.S)
+
+    def test_transfers_in_period_change_balance(self):
+        self.put(1, "2026-11-12", KIM, 9000)
+        self.store.data["transfers"] = [
+            {"date": "2026-11-15", "from": LEE, "to": KIM, "amount": 3000},
+            {"date": "2026-11-25", "from": PARK, "to": KIM, "amount": 3000},   # 기간 밖
+        ]
+        rows = balances(self.store, self.S, self.E)
+        self.assertEqual((rows[LEE]["sent"], rows[LEE]["balance"]), (3000, 0))
+        self.assertEqual((rows[KIM]["received"], rows[KIM]["balance"]), (3000, 3000))
+        self.assertEqual(rows[PARK]["balance"], -3000)
+
+    def test_bad_transfer_raises(self):
+        self.store.data["transfers"] = [{"date": "2026-11-15", "from": LEE, "to": KIM, "amount": 0}]
+        with self.assertRaises(ValueError):
+            balances(self.store, self.S, self.E)
+
+    # 4. 모든 사람의 잔액 합이 0인지 검사
+    def test_balance_sum_is_zero(self):
+        # test_basic F4Basic.test_balance_sum 과 같은 값
+        self.put(1, "2026-11-12", KIM, 9000)
+        self.put(2, "2026-11-13", LEE, 3000)
+        self.assertEqual(balance_sum(balances(self.store, self.S, self.E)), 0)
+
+    def test_balance_sum_zero_with_remainders_weights_transfers(self):
+        self.put(1, "2026-11-12", KIM, 10001, weights={KIM: 2})
+        self.put(2, "2026-11-13", PARK, 7, members=[LEE, PARK])
+        self.store.data["transfers"] = [{"date": "2026-11-14", "from": LEE, "to": KIM, "amount": 1234}]
+        self.assertEqual(balance_sum(balances(self.store, self.S, self.E)), 0)
+
+    def test_balance_sum_detects_nonzero(self):
+        rows = {KIM: {"balance": 10}, LEE: {"balance": -3}}
+        self.assertEqual(balance_sum(rows), 7)
+        self.assertEqual(balance_sum({}), 0)
+        with self.assertRaises(ValueError):
+            balance_sum([1, 2])
+
+
+class SettleCommandTest(StoreCase):
+    """명령 `python -m moim settle show` (moim/commands/settle.py)."""
+
+    def run_cmd(self, argv):
+        lines = []
+        args = cli.build_parser().parse_args(argv)
+        changed = cli.run(args, self.cfg, self.store, lines.append)
+        return changed, "\n".join(lines)
+
+    def test_show_prints_table_and_zero_sum(self):
+        self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
+                                            "members": list(NAMES), "deleted": False})
+        changed, text = self.run_cmd(["settle", "show", "--month", "2026-11"])
+        self.assertFalse(changed)   # 조회만 하므로 저장하지 않음
+        self.assertIn("정산 기간: 2026-11-01 ~ 2026-11-30", text)
+        self.assertIn("9,000", text)
+        self.assertIn("-3,000", text)
+        self.assertIn("잔액 합: 0 (정상)", text)
+
+    def test_show_with_start_end_and_empty(self):
+        changed, text = self.run_cmd(["settle", "show", "--start", "2026-12-01", "--end", "2026-12-31"])
+        self.assertFalse(changed)
+        self.assertIn("정산할 지출이 없습니다", text)
+
+    def test_show_without_period_is_error(self):
+        with self.assertRaises(ValueError):
+            self.run_cmd(["settle", "show"])
 
 if __name__ == "__main__":
     unittest.main()
