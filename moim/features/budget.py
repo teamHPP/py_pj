@@ -95,8 +95,34 @@ def record_payment(store, date, member, amount, memo=""):
 
 
 def treasury_balance(store, until=None):
-    """모임 통장 잔고 = 회비 입금 합계 - 지출 합계(until 날짜까지)."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """모임 통장 잔고 = 회비 입금 합계 - 지출 합계(until 날짜까지).
+
+    - until: 그날까지(당일 포함, 규약 3). None 이면 처음부터 끝까지 전부
+    - 회비 입금은 store.data["payments"], 지출 합계는 period_total(19) 로만 센다(삭제된 지출 제외)
+    - 돌려주는 값: 원 단위 int. 지출이 더 많으면 음수. 자료가 없으면 0
+    - 잘못된 until 이나 payments 자료는 이유를 담은 ValueError. Store 는 바꾸지 않는다
+    """
+    end = None if until is None else dates.parse(until)
+    paid_in = sum(p["amount"] for p in _payments_until(store, end))
+    return paid_in - period_total(store, None, end)
+
+
+def _payments_until(store, end):
+    """end 날짜까지(포함)의 회비 입금 기록. end 가 None 이면 전부. 자료 모양이 잘못되면 ValueError."""
+    items = store.data.get("payments", [])
+    if not isinstance(items, list):
+        raise ValueError("회비 입금(payments)은 목록이어야 합니다")
+    picked = []
+    for p in items:
+        if not isinstance(p, dict) or not isinstance(p.get("date"), str):
+            raise ValueError(f"회비 입금 기록 형식이 잘못되었습니다: {p!r}")
+        amount = p.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount < 1:
+            raise ValueError(f"회비 입금 금액이 잘못되었습니다(1원 이상의 정수): {amount!r}")
+        day = dates.parse(p["date"])
+        if end is None or day <= end:
+            picked.append(p)
+    return picked
 
 
 def unpaid(store, cfg, month):
