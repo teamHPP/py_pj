@@ -5,17 +5,41 @@ run 은 자료를 바꿨으면 True 를 돌려준다(통합 실행 틀이 그때
 인자 해석은 common/cliutil.py 의 _members(참여자), _weights(비율), _period(기간)를 쓴다.
 """
 
+from ..common import cliutil
+from ..features import report
+
 GROUP = 'report'
 
 
 def add_parser(sub, period_args):
     grp = sub.add_parser(GROUP, help="보고서").add_subparsers(dest="cmd")
-    # 예: s = grp.add_parser("list"); s.add_argument("--order", default="id")
-    #     기간을 받는 명령은 period_args(s) 로 --month, --start, --end 를 붙인다.
+
+    s = grp.add_parser("month", help="한 달 보고서(합계·분류별·사람별)")
+    s.add_argument("month", help="YYYY-MM")
+
+    s = grp.add_parser("period", help="기간 보고서(합계·분류별·사람별)")
+    period_args(s)
+
+    s = grp.add_parser("months", help="여러 달의 월별 합계")
+    s.add_argument("start_month", help="시작 달 YYYY-MM")
+    s.add_argument("end_month", help="끝 달 YYYY-MM")
+
     return grp
 
 
 def run(c, args, cfg, store, out):
-    # 예: if c == "list": ...; return False
+    if c == "month":
+        out(report.month_report(store, args.month))
+        return False
+
+    if c == "period":
+        start, end = cliutil._period(args)
+        out(report.period_report(store, start, end))
+        return False
+
+    if c == "months":
+        out(report.monthly_report(store, args.start_month, args.end_month))
+        return False
+
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False

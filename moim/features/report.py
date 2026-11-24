@@ -82,7 +82,55 @@ def biggest_day(store, start, end):
 
 
 def month_report(store, month):
-    raise NotImplementedError("이 함수를 구현한다")
+    """한 달 보고서 글. 제목·합계(건수)·분류별 표·사람별(낸 돈) 표. 명령 `report month` 가 찍는다.
+
+    - 그달 1일~말일을 period_summary 로 센다(합계를 따로 세지 않음)
+    - 'YYYY-MM' 이 아닌 달은 ValueError
+    """
+    year, mon = dates.parse_month(month)
+    start, end = dates.month_range(year, mon)
+    return _report_text(f"{year:04d}-{mon:02d} 지출 보고서", period_summary(store, start, end))
+
+
+def period_report(store, start, end):
+    """기간 보고서 글. month_report 와 같은 모양이고 제목만 'YYYY-MM-DD ~ YYYY-MM-DD'. 명령 `report period` 가 찍는다.
+
+    - start·end 는 둘 다 있어야 한다(None 이면 ValueError). 시작일 > 끝일 등은 period_summary 의 ValueError
+    """
+    if start is None or end is None:
+        raise ValueError("보고서 기간의 시작일과 끝일을 모두 지정하십시오")
+    summary = period_summary(store, start, end)
+    return _report_text(f"{dates.fmt(start)} ~ {dates.fmt(end)} 지출 보고서", summary)
+
+
+def monthly_report(store, start_month, end_month):
+    """여러 달의 월별 합계 표 글. 지출이 없는 달도 0원으로 한 줄. 명령 `report months` 가 찍는다.
+
+    - 값은 monthly_totals 로만 센다. 잘못된 달·시작 달 > 끝 달은 monthly_totals 의 ValueError
+    """
+    totals = monthly_totals(store, start_month, end_month)
+    months = list(totals)
+    rows = [[ym, amount] for ym, amount in totals.items()]
+    body = table(["달", "금액"], rows, total=["합계", sum(totals.values())], numeric={1})
+    return f"{months[0]} ~ {months[-1]} 월별 지출\n{body}"
+
+
+def _by_amount(totals):
+    """{이름: 원} 을 금액이 큰 순서의 [이름, 원] 목록으로. 금액이 같으면 원래(처음 나온) 순서."""
+    return [[name, amount] for name, amount in sorted(totals.items(), key=lambda item: -item[1])]
+
+
+def _report_text(title, summary):
+    """보고서 본문. 지출이 없으면 표 대신 안내 한 줄."""
+    lines = [title, f"합계 {money.fmt(summary['total'])}원 ({summary['count']}건)"]
+    if not summary["count"]:
+        lines.append("이 기간에 지출이 없습니다")
+        return "\n".join(lines)
+    for heading, label, totals in (("분류별", "분류", summary["by_category"]),
+                                   ("사람별(낸 돈)", "이름", summary["by_person"])):
+        lines += ["", heading,
+                  table([label, "금액"], _by_amount(totals), total=["합계", summary["total"]], numeric={1})]
+    return "\n".join(lines)
 
 
 def save_report(text, path):
