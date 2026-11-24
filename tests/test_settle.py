@@ -4,6 +4,7 @@ import copy
 import datetime as dt
 import json
 import unittest
+from unittest import mock
 
 from helpers import NAMES, StoreCase
 
@@ -558,6 +559,22 @@ class SettleCommandTest(StoreCase):
     def test_show_without_period_is_error(self):
         with self.assertRaises(ValueError):
             self.run_cmd(["settle", "show"])
+
+    def test_show_output_fits_cp949_console(self):
+        # 기본 Windows 콘솔(cp949)에서 출력이 깨지거나 멈추지 않아야 한다
+        self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
+                                            "members": list(NAMES), "deleted": False})
+        _, text = self.run_cmd(["settle", "show", "--month", "2026-11"])
+        text.encode("cp949")    # 바꿀 수 없는 글자가 있으면 UnicodeEncodeError
+
+    def test_nonzero_sum_message_fits_cp949_console(self):
+        # 잔액 합이 0이 아닐 때 나오는 문구도 같은 검사를 한다
+        self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
+                                            "members": list(NAMES), "deleted": False})
+        with mock.patch("moim.features.settle.balance_sum", return_value=5):
+            _, text = self.run_cmd(["settle", "show", "--month", "2026-11"])
+        self.assertIn("잔액 합이 0이 아닙니다: 5원", text)
+        text.encode("cp949")
 
 if __name__ == "__main__":
     unittest.main()

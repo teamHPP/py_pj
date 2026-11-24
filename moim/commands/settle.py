@@ -32,8 +32,8 @@ def run(c, args, cfg, store, out):
         out(textfmt.table(["이름", "낸 돈", "부담할 돈", "보낸 송금", "받은 송금", "잔액"],
                           body, total=total, numeric={1, 2, 3, 4, 5}))
         s = settle.balance_sum(rows)
-        out("잔액 합: 0 (정상) — 잔액이 양수면 받을 돈, 음수면 보낼 돈" if s == 0
-            else f"잔액 합이 0이 아닙니다: {s:,}원 — 자료를 확인하십시오")
+        out("잔액 합: 0 (정상) - 잔액이 양수면 받을 돈, 음수면 보낼 돈" if s == 0
+            else f"잔액 합이 0이 아닙니다: {s:,}원 - 자료를 확인하십시오")
         return False
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False
