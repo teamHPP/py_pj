@@ -56,7 +56,7 @@ def run(c, args, cfg, store, out):
     if c == "import":
         r = transfer_io.import_csv(store, args.path, _mapping(args.map), args.encoding)
         out(f"가져왔습니다({r['encoding']}): {len(r['added'])}건" +
-            (f" — 지출 번호 {_lines(r['added'])}" if r["added"] else ""))
+            (f" - 지출 번호 {_lines(r['added'])}" if r["added"] else ""))
         for line, why in r["errors"]:
             out(f"오류 {line}번 줄: {why}")
         return bool(r["added"])

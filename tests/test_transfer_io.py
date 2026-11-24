@@ -705,7 +705,7 @@ class ImportCsvTest(StoreCase):
         out = []
         args = cli.build_parser().parse_args(["io", "import", p, "--map", "날짜=date;낸 사람=payer;금액=amount"])
         self.assertTrue(cli.run(args, self.cfg, self.store, out.append))      # 자료를 바꿨으니 저장
-        self.assertEqual(out[0], "가져왔습니다(utf-8-sig): 1건 — 지출 번호 1")
+        self.assertEqual(out[0], "가져왔습니다(utf-8-sig): 1건 - 지출 번호 1")
         self.assertTrue(out[1].startswith("오류 3번 줄: 날짜가 잘못되었습니다"))
         out.clear()
         args = cli.build_parser().parse_args(["io", "import", self.write("날짜\n", "e.csv"), "--map", "날짜=date"])
@@ -713,6 +713,23 @@ class ImportCsvTest(StoreCase):
         with self.assertRaises(ValueError):
             cli.run(cli.build_parser().parse_args(["io", "import", p, "--map", "날짜"]), self.cfg, self.store,
                     out.append)
+
+    def test_io_outputs_fit_cp949_console(self):
+        # 기본 Windows 콘솔(cp949)에서 출력하다 UnicodeEncodeError 로 멈추면 가져온 지출이 저장되지 않는다
+        from moim import cli
+        p = self.write("날짜,낸 사람,금액\n2026-11-17,양정현,9000\n2026-11-18,양정현,1000\n2026-11-31,양정현,1\n")
+        e = self.path("e.csv")
+        out = []
+        for argv in (["io", "import", p, "--map", "날짜=date;낸 사람=payer;금액=amount"],
+                     ["io", "export-csv", e, "--month", "2026-11"],
+                     ["io", "export-json", self.path("e.json")],
+                     ["io", "verify", e, "--month", "2026-11"],
+                     ["io", "verify", self.write("amount\n1\n", "x.csv")]):
+            cli.run(cli.build_parser().parse_args(argv), self.cfg, self.store, out.append)
+        self.assertEqual(len(out), 7)   # import 2줄(결과·오류), export 2줄, verify 3줄(일치, 불일치·건수 참고)
+        for line in out:
+            with self.subTest(line=line):
+                line.encode("cp949")
 
 
 if __name__ == "__main__":
