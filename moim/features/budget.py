@@ -106,19 +106,28 @@ def category_status(store, cfg, month):
 
 
 def category_budgets(cfg):
-    """설정 파일의 분류별 예산 cfg["budget"]["by_category"] = {분류: 0 이상의 원 단위 정수}. 없으면 {}."""
+    """설정 파일의 분류별 예산 cfg["budget"]["by_category"] = {분류: 0 이상의 원 단위 정수}. 없으면 {}.
+
+    분류 이름은 앞뒤 공백을 지워 category_of(03)와 같은 기준으로 맞춘다(" 식비 " → "식비").
+    지운 뒤 이름이 겹치면("식비"와 " 식비") 어느 예산인지 정할 수 없으므로 ValueError.
+    """
     section = cfg.get("budget") if isinstance(cfg, dict) else None
     value = section.get("by_category") if isinstance(section, dict) else None
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise ValueError(f'분류별 예산은 {{"분류": 원}} 형식이어야 합니다: {value!r}')
+    budgets = {}
     for name, limit in value.items():
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"분류 이름이 비어 있습니다: {name!r}")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
             raise ValueError(f"분류별 예산은 0 이상의 원 단위 정수여야 합니다: {name}={limit!r}")
-    return dict(value)
+        key = name.strip()
+        if key in budgets:
+            raise ValueError(f"분류별 예산의 분류 이름이 겹칩니다(앞뒤 공백을 지우면 같음): {key!r}")
+        budgets[key] = limit
+    return budgets
 
 
 def forecast(store, month, today):

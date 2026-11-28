@@ -64,6 +64,16 @@ class CategoryStatus(StoreCase):
         self.assertEqual(list(result), ["교통", "식비"])
         self.assertIs(result["교통"]["warn"], True)
 
+    def test_spaces_around_config_name_match_category_of(self):
+        # 리뷰(#72) 반영: 설정 이름의 앞뒤 공백을 지워 category_of 와 같은 기준으로 맞춘다
+        self.spend("2026-11-12", 45000, "식비")
+        for name in (" 식비", "식비 ", " 식비 "):
+            cfg = dict(self.cfg, budget={"monthly": 100000, "by_category": {name: 50000}})
+            with self.subTest(name=name):
+                self.assertEqual(self.status(cfg),
+                                 {"식비": {"budget": 50000, "spent": 45000, "remaining": 5000,
+                                          "over": False, "warn": True}})
+
     def test_no_category_budgets_is_empty(self):
         self.assertEqual(self.status({"budget": {"monthly": 100000}}), {})
 
@@ -76,7 +86,8 @@ class CategoryStatus(StoreCase):
     def test_bad_input_is_error(self):
         with self.assertRaises(ValueError):
             self.status(month="2026-13")
-        for by_category in ([("식비", 1000)], {"식비": -1}, {"식비": True}, {"식비": "1000"}, {"": 1000}):
+        for by_category in ([("식비", 1000)], {"식비": -1}, {"식비": True}, {"식비": "1000"}, {"": 1000},
+                            {"식비": 1000, " 식비": 2000}):   # 공백을 지우면 겹치는 이름
             cfg = dict(self.cfg, budget={"monthly": 100000, "by_category": by_category})
             with self.subTest(by_category=by_category), self.assertRaises(ValueError):
                 self.status(cfg)
