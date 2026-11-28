@@ -10,9 +10,10 @@ from helpers import NAMES, StoreCase
 
 from moim import cli
 from moim.common.money import check_weights, split
+from moim.common.ledger import insert
 from moim.common.queries import expense_shares, expenses_in, is_locked, member_shares
 from moim.common.store import EMPTY, Store
-from moim.features.settle import balance_sum, balances
+from moim.features.settle import balance_sum, balances, lock_period
 
 KIM, LEE, PARK = NAMES
 
@@ -575,6 +576,85 @@ class SettleCommandTest(StoreCase):
             _, text = self.run_cmd(["settle", "show", "--month", "2026-11"])
         self.assertIn("잔액 합이 0이 아닙니다: 5원", text)
         text.encode("cp949")
+
+    def test_lock_command_saves_period(self):
+        self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
+                                            "members": list(NAMES), "deleted": False})
+        changed, text = self.run_cmd(["settle", "lock", "--month", "2026-11"])
+        self.assertTrue(changed)    # locks 가 바뀌었으므로 저장해야 함
+        self.assertIn("정산을 확정했습니다: 2026-11-01 ~ 2026-11-30", text)
+        self.assertEqual(self.store.data["locks"], [{"start": "2026-11-01", "end": "2026-11-30"}])
+        text.encode("cp949")
+
+    def test_lock_command_refuses_nonzero_sum(self):
+        with mock.patch("moim.features.settle.balance_sum", return_value=5):
+            with self.assertRaises(ValueError):
+                self.run_cmd(["settle", "lock", "--start", "2026-11-01", "--end", "2026-11-30"])
+        self.assertEqual(self.store.data["locks"], [])
+
+
+class LockPeriodTest(StoreCase):
+    """lock_period: 잔액 합이 0일 때만 확정 기간을 locks 에 더한다(규약 6장)."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
+                                            "members": list(NAMES), "deleted": False})
+
+    def test_adds_period_and_returns_it(self):
+        lock = lock_period(self.store, "2026-11-01", "2026-11-30")
+        self.assertEqual(lock, {"start": "2026-11-01", "end": "2026-11-30"})
+        self.assertEqual(self.store.data["locks"], [lock])
+
+    def test_locked_period_includes_both_ends(self):
+        lock_period(self.store, "2026-11-01", "2026-11-30")
+        self.assertTrue(is_locked(self.store, "2026-11-01"))
+        self.assertTrue(is_locked(self.store, "2026-11-30"))
+        self.assertFalse(is_locked(self.store, "2026-10-31"))
+        self.assertFalse(is_locked(self.store, "2026-12-01"))
+
+    def test_date_inputs_are_saved_as_text(self):
+        lock = lock_period(self.store, dt.date(2026, 11, 1), dt.datetime(2026, 11, 30, 23, 59))
+        self.assertEqual(lock, {"start": "2026-11-01", "end": "2026-11-30"})
+
+    def test_insert_is_refused_after_lock(self):
+        # 확정한 기간에는 지출을 더할 수 없다(기능 1 ledger.insert 가 is_locked 로 거부)
+        lock_period(self.store, "2026-11-01", "2026-11-30")
+        with self.assertRaises(ValueError):
+            insert(self.store, "2026-11-20", KIM, 3000, list(NAMES))
+        self.assertEqual(len(self.store.data["expenses"]), 1)
+
+    def test_refuses_when_balance_sum_is_not_zero(self):
+        with mock.patch("moim.features.settle.balance_sum", return_value=5):
+            with self.assertRaises(ValueError) as cm:
+                lock_period(self.store, "2026-11-01", "2026-11-30")
+        self.assertIn("잔액 합이 0이 아니어서", str(cm.exception))
+        self.assertEqual(self.store.data["locks"], [])
+
+    def test_refuses_start_after_end(self):
+        with self.assertRaises(ValueError):
+            lock_period(self.store, "2026-11-30", "2026-11-01")
+        self.assertEqual(self.store.data["locks"], [])
+
+    def test_refuses_period_already_locked(self):
+        lock_period(self.store, "2026-11-01", "2026-11-30")
+        with self.assertRaises(ValueError):
+            lock_period(self.store, "2026-11-10", "2026-11-20")
+        self.assertEqual(len(self.store.data["locks"]), 1)
+
+    def test_overlapping_new_period_is_added(self):
+        lock_period(self.store, "2026-11-01", "2026-11-15")
+        lock_period(self.store, "2026-11-10", "2026-11-30")
+        self.assertEqual(len(self.store.data["locks"]), 2)
+
+    def test_empty_period_can_be_locked(self):
+        lock = lock_period(self.store, "2026-12-01", "2026-12-31")
+        self.assertEqual(lock, {"start": "2026-12-01", "end": "2026-12-31"})
+
+    def test_bad_date_raises_without_change(self):
+        with self.assertRaises(ValueError):
+            lock_period(self.store, "2026-11-01", "2026-11-31")
+        self.assertEqual(self.store.data["locks"], [])
 
 if __name__ == "__main__":
     unittest.main()
