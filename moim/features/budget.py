@@ -249,5 +249,96 @@ def import_bank(store, path, treasurer):
     출금 → 총무가 낸 지출(참여자: 그날의 회원 전원), 입금 → 적요의 이름으로 회비 입금.
     이미 들어간 거래(같은 날·같은 금액·같은 적요의 출금, 같은 날·같은 사람·같은 금액의 은행 입금)와
     파일 안에서 거래일자·거래시각·적요·금액·잔액이 모두 같은 줄은 중복으로 보고 건너뛴다.
-    돌려주는 값: {"expenses": [번호], "payments": 건수, "duplicates": [줄 번호], "errors": [(줄 번호, 오류)]}"""
-    raise NotImplementedError("이 함수를 구현한다")
+    돌려주는 값: {"expenses": [번호], "payments": 건수, "duplicates": [줄 번호], "errors": [(줄 번호, 오류)]}
+
+    - 열은 이름으로 읽는다(read_csv_rows, CP949·UTF-8). BANK_COLUMNS 중 빠진 열이 있으면 파일 전체 ValueError
+    - 금액 칸은 빈칸과 "0"을 모두 '없음'으로 본다. 출금·입금이 둘 다 있거나 둘 다 없으면 그 줄은 오류
+    - 거래일자는 YYYY.MM.DD. 출금은 ledger.insert(action "bank_import")로, 참여자는 active_members(그날)
+    - 입금은 record_payment 로 넣고 source 를 "bank" 로 바꾼다. 적요(앞뒤 공백 제외)가 명부에 없으면 오류
+    - 이미 들어간 거래는 가져오기 전 자료와 비교한다. 그래서 한 파일 안에서 시각·잔액이 다른
+      같은 날·같은 금액·같은 적요 거래는 둘 다 들어가고, 같은 파일을 다시 가져오면 둘 다 건너뛴다
+    - 오류 줄은 건너뛰고 나머지는 가져온다. 디스크 저장은 명령 쪽(통합 실행)이 한다
+    """
+    if not isinstance(treasurer, str) or not treasurer.strip():
+        raise ValueError("총무 이름이 비어 있습니다(설정 파일의 treasurer 또는 --treasurer)")
+    treasurer = treasurer.strip()
+    if store.member(treasurer) is None:
+        raise ValueError(f"총무가 명부에 없습니다: {treasurer}")
+    _, rows = read_csv_rows(path)
+    if rows:
+        missing = [name for name in BANK_COLUMNS if name not in rows[0][1]]
+        if missing:
+            raise ValueError(f"은행 거래내역에 없는 열이 있습니다: {', '.join(missing)}")
+
+    old_expenses = {(e["date"], e["amount"], e.get("memo", "")) for e in store.data["expenses"]
+                    if not e.get("deleted", False)}
+    old_payments = {(p["date"], p["member"], p["amount"]) for p in _payments_until(store, None)
+                    if p.get("source") == "bank"}
+    result = {"expenses": [], "payments": 0, "duplicates": [], "errors": []}
+    seen = set()
+    for line, row in rows:
+        try:
+            day, memo, out_amount, in_amount = _bank_row(row)
+        except ValueError as exc:
+            result["errors"].append((line, str(exc)))
+            continue
+        whole = tuple(row[name].strip() for name in BANK_COLUMNS)
+        if whole in seen:
+            result["duplicates"].append(line)
+            continue
+        seen.add(whole)
+        try:
+            if out_amount:
+                if (day, out_amount, memo) in old_expenses:
+                    result["duplicates"].append(line)
+                    continue
+                e = ledger.insert(store, day, treasurer, out_amount, active_members(store, day),
+                                  memo=memo, action="bank_import")
+                result["expenses"].append(e["id"])
+            else:
+                if (day, memo, in_amount) in old_payments:
+                    result["duplicates"].append(line)
+                    continue
+                p = record_payment(store, day, memo, in_amount)
+                for saved in store.data["payments"]:
+                    if saved["id"] == p["id"]:
+                        saved["source"] = "bank"
+                result["payments"] += 1
+        except ValueError as exc:
+            result["errors"].append((line, str(exc)))
+    return result
+
+
+def _bank_row(row):
+    """은행 거래내역 한 줄 → (YYYY-MM-DD, 적요, 출금액, 입금액). 금액은 원 단위 int, 없으면 0."""
+    if None in row or any(value is None for value in row.values()):
+        raise ValueError("열 수가 머리글과 다릅니다")
+    text = row["거래일자"].strip()
+    parts = text.split(".")
+    if len(parts) != 3 or [len(p) for p in parts] != [4, 2, 2] or not all(p.isdigit() for p in parts):
+        raise ValueError(f"거래일자 형식이 잘못되었습니다(YYYY.MM.DD): {text!r}")
+    day = dates.fmt("-".join(parts))
+    memo = row["적요"].strip()
+    if not memo:
+        raise ValueError("적요가 비어 있습니다")
+    out_amount = _bank_amount(row["출금액"], "출금액")
+    in_amount = _bank_amount(row["입금액"], "입금액")
+    if out_amount and in_amount:
+        raise ValueError("출금과 입금이 한 줄에 함께 있습니다")
+    if not out_amount and not in_amount:
+        raise ValueError("출금액과 입금액이 모두 비어 있습니다")
+    return day, memo, out_amount, in_amount
+
+
+def _bank_amount(text, label):
+    """금액 칸: 빈칸·"0" → 0, 쉼표 허용. 음수나 금액이 아닌 값은 ValueError."""
+    text = text.strip()
+    if not text:
+        return 0
+    try:
+        won = money.to_won(text)
+    except (ValueError, ArithmeticError):
+        raise ValueError(f"{label} 형식이 잘못되었습니다: {text!r}") from None
+    if won < 0:
+        raise ValueError(f"{label}은 0 이상이어야 합니다: {text!r}")
+    return won
