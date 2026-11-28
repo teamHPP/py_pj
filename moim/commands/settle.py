@@ -15,6 +15,8 @@ def add_parser(sub, period_args):
     grp = sub.add_parser(GROUP, help="정산").add_subparsers(dest="cmd")
     s = grp.add_parser("show", help="기간 안 사람마다 낸 돈·부담할 돈·잔액")
     period_args(s)
+    lk = grp.add_parser("lock", help="기간의 정산을 확정한다(잔액 합이 0일 때만)")
+    period_args(lk)
     return grp
 
 
@@ -35,5 +37,11 @@ def run(c, args, cfg, store, out):
         out("잔액 합: 0 (정상) - 잔액이 양수면 받을 돈, 음수면 보낼 돈" if s == 0
             else f"잔액 합이 0이 아닙니다: {s:,}원 - 자료를 확인하십시오")
         return False
+    if c == "lock":
+        start, end = cliutil._period(args)
+        lock = settle.lock_period(store, start, end)
+        out(f"정산을 확정했습니다: {lock['start']} ~ {lock['end']}")
+        out("이 기간의 지출은 이제 추가·수정·삭제·되살리기를 할 수 없습니다")
+        return True
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False

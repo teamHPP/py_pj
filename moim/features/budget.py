@@ -14,6 +14,7 @@
 """
 
 import copy
+from decimal import Decimal
 
 from ..common import dates, ledger, money
 from ..common.csvio import read_csv_rows
@@ -27,8 +28,9 @@ def month_status(store, cfg, month, today=None):
     - 월 예산은 설정 파일의 cfg["budget"]["monthly"] (0 이상의 원 단위 정수)
     - 지출은 period_total(19) 로만 센다(삭제 제외·기간 경계가 보고서·정산과 같게)
     - today 가 그달 1일보다 앞이면 지출 0. period_total 은 시작일 > 끝일이면 ValueError 라 부르기 전에 막는다
-    - 돌려주는 값: {"month", "budget", "spent", "remaining", "over"}
+    - 돌려주는 값: {"month", "budget", "spent", "remaining", "over", "warn"}
       remaining = budget - spent (넘으면 음수), over = spent > budget (정확히 예산만큼은 초과 아님)
+      warn = spent > budget x 경보 비율(설정 warn_ratio, 없으면 0.8). 80% "초과"일 때만 경보(정확히 80%는 아님)
     """
     start, end = dates.month_range(*dates.parse_month(month))
     limit = monthly_budget(cfg)
@@ -41,6 +43,7 @@ def month_status(store, cfg, month, today=None):
         "spent": spent,
         "remaining": limit - spent,
         "over": spent > limit,
+        "warn": over_warn_ratio(spent, limit, warn_ratio(cfg)),
     }
 
 
@@ -55,9 +58,76 @@ def monthly_budget(cfg):
     return value
 
 
+DEFAULT_WARN_RATIO = "0.8"   # 공고문 기능 5: 예산의 80%를 넘으면 미리 경보
+
+
+def warn_ratio(cfg):
+    """설정 파일의 경보 비율 cfg["warn_ratio"](0 초과 1 이하). 없으면 0.8. 소수 오차를 피하려고 Decimal 로 돌려준다."""
+    value = cfg.get("warn_ratio") if isinstance(cfg, dict) else None
+    if value is None:
+        return Decimal(DEFAULT_WARN_RATIO)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"경보 비율은 0 초과 1 이하의 수여야 합니다: {value!r}")
+    ratio = Decimal(str(value))
+    if not Decimal(0) < ratio <= Decimal(1):
+        raise ValueError(f"경보 비율은 0 초과 1 이하의 수여야 합니다: {value!r}")
+    return ratio
+
+
+def over_warn_ratio(spent, limit, ratio):
+    """지출이 예산 x 경보 비율을 넘었는가(같으면 아님). 원 단위 정수와 Decimal 로만 비교한다."""
+    return Decimal(spent) > Decimal(limit) * ratio
+
+
 def category_status(store, cfg, month):
-    """분류별 예산 상태. {분류: {"budget", "spent", "remaining", "over", "warn"}}"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """분류별 예산 상태. {분류: {"budget", "spent", "remaining", "over", "warn"}}
+
+    - 대상: 설정 파일 cfg["budget"]["by_category"] 에 예산이 있는 분류(설정에 적힌 순서). 없으면 {}
+    - spent: 그달 1일~말일(규약 3) 그 분류의 지출 합계. category_totals(04) 로만 센다(삭제 제외, "미분류" 묶음 같게)
+      지출이 없는 분류는 category_totals 에 없으므로 0 (규격 04 주의)
+    - remaining = budget - spent, over = spent > budget, warn = spent > budget x 경보 비율(month_status 와 같은 기준)
+    - 잘못된 달·설정은 이유를 담은 ValueError. Store 는 바꾸지 않는다
+    """
+    start, end = dates.month_range(*dates.parse_month(month))
+    budgets = category_budgets(cfg)
+    ratio = warn_ratio(cfg)
+    totals = category_totals(store, start, end)
+    result = {}
+    for name, limit in budgets.items():
+        spent = totals.get(name, {"count": 0, "amount": 0})["amount"]
+        result[name] = {
+            "budget": limit,
+            "spent": spent,
+            "remaining": limit - spent,
+            "over": spent > limit,
+            "warn": over_warn_ratio(spent, limit, ratio),
+        }
+    return result
+
+
+def category_budgets(cfg):
+    """설정 파일의 분류별 예산 cfg["budget"]["by_category"] = {분류: 0 이상의 원 단위 정수}. 없으면 {}.
+
+    분류 이름은 앞뒤 공백을 지워 category_of(03)와 같은 기준으로 맞춘다(" 식비 " → "식비").
+    지운 뒤 이름이 겹치면("식비"와 " 식비") 어느 예산인지 정할 수 없으므로 ValueError.
+    """
+    section = cfg.get("budget") if isinstance(cfg, dict) else None
+    value = section.get("by_category") if isinstance(section, dict) else None
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f'분류별 예산은 {{"분류": 원}} 형식이어야 합니다: {value!r}')
+    budgets = {}
+    for name, limit in value.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"분류 이름이 비어 있습니다: {name!r}")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError(f"분류별 예산은 0 이상의 원 단위 정수여야 합니다: {name}={limit!r}")
+        key = name.strip()
+        if key in budgets:
+            raise ValueError(f"분류별 예산의 분류 이름이 겹칩니다(앞뒤 공백을 지우면 같음): {key!r}")
+        budgets[key] = limit
+    return budgets
 
 
 def forecast(store, month, today):
@@ -126,8 +196,35 @@ def _payments_until(store, end):
 
 
 def unpaid(store, cfg, month):
-    """그달 회비 미납자. 그달 1일 또는 말일에 회원인 사람이 대상. [(이름, 낸 회비, 모자란 금액)]"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """그달 회비 미납자. 그달 1일 또는 말일에 회원인 사람이 대상. [(이름, 낸 회비, 모자란 금액)]
+
+    - 대상: 그달 1일이나 말일에 회원인 사람(회원 판단은 active_members → is_member_active), 명부 순서
+    - 낸 회비: 그달 1일~말일(양끝 포함)에 그 사람 이름으로 들어온 회비 입금 합계
+    - 1인당 월 회비는 설정 파일의 cfg["dues"]["monthly"](0 이상의 원 단위 정수). 낸 회비가 그보다 적은 사람만 넣는다
+    - 모두 냈으면 []. 잘못된 달·설정·자료는 이유를 담은 ValueError. Store 는 바꾸지 않는다
+    """
+    first, last = dates.month_range(*dates.parse_month(month))
+    dues = monthly_dues(cfg)
+    on_first, on_last = active_members(store, first), active_members(store, last)
+    targets = on_first + [n for n in on_last if n not in on_first]
+    order = [m["name"] for m in store.data["members"]]
+    targets.sort(key=order.index)
+    paid = {}
+    for p in _payments_until(store, last):
+        if dates.parse(p["date"]) >= first:
+            paid[p["member"]] = paid.get(p["member"], 0) + p["amount"]
+    return [(n, paid.get(n, 0), dues - paid.get(n, 0)) for n in targets if paid.get(n, 0) < dues]
+
+
+def monthly_dues(cfg):
+    """설정 파일의 1인당 월 회비 cfg["dues"]["monthly"]. 없거나 0 이상의 정수가 아니면 ValueError."""
+    section = cfg.get("dues") if isinstance(cfg, dict) else None
+    value = section.get("monthly") if isinstance(section, dict) else None
+    if value is None:
+        raise ValueError('설정 파일에 1인당 월 회비가 없습니다("dues": {"monthly": 원})')
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"1인당 월 회비는 0 이상의 원 단위 정수여야 합니다: {value!r}")
+    return value
 
 
 def dues_deduction(store, cfg, month):

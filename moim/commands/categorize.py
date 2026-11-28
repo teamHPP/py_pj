@@ -5,7 +5,7 @@ run 은 자료를 바꿨으면 True 를 돌려준다(통합 실행 틀이 그때
 인자 해석은 common/cliutil.py 의 _members(참여자), _weights(비율), _period(기간)를 쓴다.
 """
 
-from ..common import cliutil, money
+from ..common import cliutil, money, textfmt
 from ..features import categorize
 
 GROUP = 'cat'
@@ -31,6 +31,17 @@ def add_parser(sub, period_args):
     s.add_argument("--preview", action="store_true", help="바꾸지 않고 바뀔 목록만 보기")
 
     grp.add_parser("uncat", help="분류되지 않은 지출 목록")
+
+    s = grp.add_parser("set", help="분류 직접 지정(다시 분류해도 바뀌지 않게 고정)")
+    s.add_argument("id", type=int, help="지출 번호")
+    s.add_argument("category")
+
+    s = grp.add_parser("unfix", help="직접 정한 분류의 고정 풀기")
+    s.add_argument("id", type=int, help="지출 번호")
+
+    period_args(grp.add_parser("summary", help="분류별 건수·금액"))
+
+    grp.add_parser("check", help="규칙 겹침 검사(같은 키워드가 다른 분류에 있는 규칙)")
     return grp
 
 
@@ -96,6 +107,38 @@ def run(c, args, cfg, store, out):
             out("분류되지 않은 지출이 없습니다")
         for e in items:
             out(f"{e['id']}번 {e['date']} {e['payer']} {money.fmt(e['amount'])}원 {e.get('memo') or ''}".rstrip())
+        return False
+
+    if c in ("set", "unfix"):
+        old = store.get_expense(args.id)
+        before = (old.get("category"), old.get("category_fixed", False))
+        if c == "set":
+            e = categorize.set_category(store, args.id, args.category)
+            out(f"{e['id']}번 지출의 분류를 {e['category']}(으)로 정했습니다(다시 분류해도 바뀌지 않습니다)")
+        else:
+            e = categorize.unfix_category(store, args.id)
+            out(f"{e['id']}번 지출의 분류 고정을 풀었습니다(다음 cat apply부터 규칙으로 다시 분류됩니다)")
+        return (e.get("category"), e.get("category_fixed", False)) != before
+
+    if c == "summary":
+        start, end = cliutil._period(args)
+        totals = categorize.summary(store, start, end)
+        if not totals:
+            out(f"{start} ~ {end} 기간에 지출이 없습니다")
+            return False
+        rows = [[name, v["count"], v["amount"]] for name, v in totals.items()]
+        total = ["합계", sum(v["count"] for v in totals.values()), sum(v["amount"] for v in totals.values())]
+        out(f"분류별 집계: {start} ~ {end}")
+        out(textfmt.table(["분류", "건수", "금액"], rows, total=total, numeric={1, 2}))
+        return False
+
+    if c == "check":
+        rules = categorize.load_rules(path)
+        found = categorize.overlaps(rules)
+        if not found:
+            out("겹치는 규칙이 없습니다")
+        for i, j, word in found:   # 화면 번호는 cat list 와 같이 1부터
+            out(f"키워드 '{word}': {i + 1}번 {rules[i]['category']} / {j + 1}번 {rules[j]['category']}")
         return False
 
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())

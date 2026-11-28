@@ -14,18 +14,44 @@
 
 import copy
 import csv
-from ..common import dates, ledger, money
+from ..common import cliutil, dates, ledger, money
+from ..common.csvio import detect_encoding
 from ..common.queries import is_locked
 
 _EDITABLE_FIELDS = ("date", "payer", "amount", "members", "memo", "weights", "category")
 
 
 def add_member(store, name, joined):
-    raise NotImplementedError("이 함수를 구현한다")
+    """명부에 새 회원을 더한다(가입일부터, 탈퇴일 없음). 이미 있는 이름이면 거부한다. 돌려주는 값: 새 회원."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"이름이 비어 있습니다: {name!r}")
+    name = name.strip()
+    if store.member(name) is not None:
+        raise ValueError(f"이미 명부에 있는 사람입니다: {name}")
+    m = {"name": name, "joined": dates.fmt(joined), "left": None}
+    store.data["members"].append(m)
+    return copy.deepcopy(m)
 
 
 def leave_member(store, name, left):
-    raise NotImplementedError("이 함수를 구현한다")
+    """회원의 탈퇴일을 적는다. 탈퇴일은 그 사람의 가입일보다 앞일 수 없다. 돌려주는 값: 바뀐 회원.
+
+    탈퇴일 뒤 날짜에 그 사람이 낸 사람이거나 참여자로 들어간, 삭제되지 않은 지출이 있으면 거부한다
+    (규약 4·6-2: 탈퇴 다음 날부터는 참여자가 될 수 없다).
+    """
+    m = store.member(name)
+    if m is None:
+        raise ValueError(f"명부에 없는 사람입니다: {name}")
+    left_fmt = dates.fmt(left)
+    if left_fmt < m["joined"]:
+        raise ValueError(f"탈퇴일이 가입일보다 빠릅니다: {left_fmt} < {m['joined']}")
+    conflicts = [e["id"] for e in store.data["expenses"]
+                 if not e.get("deleted", False) and e["date"] > left_fmt
+                 and (e["payer"] == name or name in e.get("members", []))]
+    if conflicts:
+        raise ValueError(f"탈퇴일 뒤에 참여자나 낸 사람으로 남은 지출이 있습니다(번호: {conflicts}): {left_fmt}")
+    m["left"] = left_fmt
+    return copy.deepcopy(m)
 
 
 def load_members_file(store, path):
@@ -35,7 +61,8 @@ def load_members_file(store, path):
 
 
 def list_members(store):
-    raise NotImplementedError("이 함수를 구현한다")
+    """명부 목록(명부 순서). 독립 복사본을 돌려준다."""
+    return [copy.deepcopy(m) for m in store.data["members"]]
 
 
 def add_expense(store, date, payer, amount, members, memo="", weights=None, category=None):
@@ -122,8 +149,11 @@ def undo_last_edit(store, eid):
 
 
 def history(store, eid=None):
-    """수정·삭제 이력. eid 를 주면 그 지출의 이력만."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """수정·삭제 이력. eid 를 주면 그 지출의 이력만. 기록된 순서(시간순)대로 돌려준다."""
+    items = store.data["history"]
+    if eid is not None:
+        items = [h for h in items if h["id"] == int(eid)]
+    return [copy.deepcopy(h) for h in items]
 
 
 def add_from_file(store, path):
@@ -131,5 +161,36 @@ def add_from_file(store, path):
 
     한 줄 형식(쉼표 구분): 날짜,낸 사람,금액,참여자1;참여자2;...,메모
     '#' 로 시작하는 줄과 빈 줄은 건너뛴다. 돌려주는 값: (추가한 번호 목록, [(줄 번호, 오류)])
+
+    메모에 쉼표가 있으면 CSV처럼 큰따옴표로 감싼다("메모, 쉼표 포함"). 오류 줄은 건너뛰고 나머지는 넣는다.
+    규격 A2에 따라 이력에는 action="file_import"로 남는다. 인코딩은 csvio.detect_encoding으로 판별한다.
     """
-    raise NotImplementedError("이 함수를 구현한다")
+    added, errors = [], []
+    encoding = detect_encoding(path)
+    with open(path, encoding=encoding, newline="") as f:
+        reader = csv.reader(f)
+        while True:
+            lineno = reader.line_num + 1   # 그 행이 시작하는 실제 줄 번호(read_csv_rows와 같은 방식)
+            try:
+                row = next(reader)
+            except StopIteration:
+                break
+            if not any(field.strip() for field in row):
+                continue
+            if row[0].strip().startswith("#"):
+                continue
+            parts = [p.strip() for p in row]
+            if not 4 <= len(parts) <= 5:
+                errors.append((lineno,
+                                f"열 개수가 잘못되었습니다(날짜,낸 사람,금액,참여자1;참여자2;…[,메모]): {parts!r}"))
+                continue
+            date, payer, amount, members_text = parts[:4]
+            memo = parts[4] if len(parts) == 5 else ""
+            try:
+                members = cliutil._members(members_text)
+                e = ledger.insert(store, date, payer, amount, members, memo=memo, action="file_import")
+            except ValueError as exc:
+                errors.append((lineno, str(exc)))
+                continue
+            added.append(e["id"])
+    return added, errors

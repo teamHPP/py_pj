@@ -254,6 +254,118 @@ class DeleteExpense(StoreCase):
             expenses.delete_expense(self.store, e["id"])
 
 
+class HistoryQuery(StoreCase):
+    """확장 필수: 수정·삭제 이력 조회. 기록(store.record)은 이미 merge된 상태."""
+
+    def test_returns_all_in_order(self):
+        a, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        b, _ = expenses.add_expense(self.store, "2026-11-13", LEE, 4000, NAMES)
+        expenses.edit_expense(self.store, a["id"], amount=5000)
+        items = expenses.history(self.store)
+        self.assertEqual([(h["action"], h["id"]) for h in items],
+                          [("add", a["id"]), ("add", b["id"]), ("edit", a["id"])])
+
+    def test_filters_by_id(self):
+        a, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        b, _ = expenses.add_expense(self.store, "2026-11-13", LEE, 4000, NAMES)
+        expenses.edit_expense(self.store, a["id"], amount=5000)
+        items = expenses.history(self.store, a["id"])
+        self.assertEqual([h["action"] for h in items], ["add", "edit"])
+        self.assertTrue(all(h["id"] == a["id"] for h in items))
+        self.assertEqual(expenses.history(self.store, b["id"]), [h for h in expenses.history(self.store)
+                                                                   if h["id"] == b["id"]])
+
+    def test_no_history_for_unknown_id(self):
+        expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        self.assertEqual(expenses.history(self.store, 999), [])
+
+    def test_returns_independent_copies(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        items = expenses.history(self.store)
+        items[0]["action"] = "손상"
+        self.assertEqual(self.store.data["history"][0]["action"], "add")
+
+
+class AddFromFile(StoreCase):
+    """확장 필수: 여러 줄 한꺼번에 입력(파일에서 읽기), 잘못된 줄은 줄 번호+이유 보고."""
+
+    def write(self, text):
+        path = self.path("bulk.csv")
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        return path
+
+    def test_adds_valid_lines(self):
+        path = self.write(f"2026-11-12,{KIM},9000,{KIM};{LEE},회의 후 저녁\n"
+                           f"2026-11-13,{LEE},3000,{LEE}\n")
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(len(added), 2)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.store.get_expense(added[0])["memo"], "회의 후 저녁")
+        self.assertEqual(self.store.get_expense(added[1])["memo"], "")
+
+    def test_history_action_is_file_import(self):
+        # 함수 규격 A2: add_from_file은 이력에 "file_import"로 남아야 한다
+        path = self.write(f"2026-11-12,{KIM},9000,{KIM}\n")
+        expenses.add_from_file(self.store, path)
+        self.assertEqual([h["action"] for h in self.store.data["history"]], ["file_import"])
+
+    def test_skips_comment_and_blank_lines(self):
+        path = self.write(f"# 주석\n\n2026-11-12,{KIM},9000,{KIM}\n")
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(len(added), 1)
+        self.assertEqual(errors, [])
+
+    def test_memo_with_comma_needs_quotes(self):
+        path = self.write(f'2026-11-12,{KIM},9000,{KIM},"메모, 쉼표 포함"\n')
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.store.get_expense(added[0])["memo"], "메모, 쉼표 포함")
+
+    def test_bad_column_count_reported_with_line_number(self):
+        path = self.write(f"2026-11-12,{KIM},9000\n")
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(added, [])
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0][0], 1)
+
+    def test_bad_row_skipped_rest_still_added(self):
+        path = self.write(f"2026-11-12,{KIM},0,{KIM}\n"             # 0원 거부
+                           f"2026-11-13,{LEE},3000,{LEE}\n"          # 정상
+                           f"2026-11-14,없는사람,1000,{KIM}\n")      # 명부에 없는 사람
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(len(added), 1)
+        self.assertEqual([n for n, _ in errors], [1, 3])
+        self.assertEqual(len(self.store.data["expenses"]), 1)
+
+    def test_members_separated_by_semicolon(self):
+        path = self.write(f"2026-11-12,{KIM},9000,{KIM};{LEE};{PARK}\n")
+        added, _ = expenses.add_from_file(self.store, path)
+        self.assertEqual(self.store.get_expense(added[0])["members"], [KIM, LEE, PARK])
+
+    def test_missing_file_raises_oserror(self):
+        with self.assertRaises(OSError):
+            expenses.add_from_file(self.store, self.path("없음.csv"))
+
+    def test_cp949_file_is_detected(self):
+        path = self.path("bulk_cp949.csv")
+        with open(path, "w", encoding="cp949", newline="") as f:
+            f.write(f"2026-11-12,{KIM},9000,{KIM},메모\n")
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.store.get_expense(added[0])["memo"], "메모")
+
+    def test_quoted_newline_keeps_real_line_number(self):
+        # 따옴표 안 줄바꿈이 있는 줄은 2개의 실제 줄을 차지하므로, 그다음 줄의 줄 번호가 밀리면 안 된다
+        path = self.path("bulk.csv")
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(f'2026-11-12,{KIM},9000,{KIM},"메모\n줄바꿈"\n2026-13-01,{KIM},1000,{KIM}\n')
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(len(added), 1)
+        self.assertEqual(self.store.get_expense(added[0])["memo"], "메모\n줄바꿈")
+        self.assertEqual(errors[0][0], 3)  # 첫 줄이 2개 줄을 차지했으므로 오류 줄은 3번째 실제 줄
+
+
 class ExpenseCommands(StoreCase):
     """moim exp add/list/edit/delete 명령이 실제로 연결돼 있는지."""
 
@@ -282,6 +394,28 @@ class ExpenseCommands(StoreCase):
         changed, out = self.run_cmd(["exp", "delete", str(eid)])
         self.assertTrue(changed)
         self.assertTrue(self.store.get_expense(eid)["deleted"])
+
+    def test_history(self):
+        changed, out = self.run_cmd(["exp", "add", "2026-11-12", KIM, "9,000", f"{KIM};{LEE}"])
+        self.assertTrue(changed)
+        eid = self.store.data["expenses"][0]["id"]
+        self.run_cmd(["exp", "edit", str(eid), "--amount", "6000"])
+
+        changed, out = self.run_cmd(["exp", "history"])
+        self.assertFalse(changed)
+        self.assertEqual(len(out), 2)
+
+        changed, out = self.run_cmd(["exp", "history", str(eid)])
+        self.assertEqual(len(out), 2)
+
+    def test_import_lines(self):
+        path = self.path("bulk.csv")
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(f"2026-11-12,{KIM},9000,{KIM}\n2026-13-01,{KIM},1000,{KIM}\n")
+        changed, out = self.run_cmd(["exp", "import-lines", path])
+        self.assertTrue(changed)
+        self.assertIn("추가했습니다: 1건", out[0])
+        self.assertTrue(out[1].startswith("오류 2번 줄: "))
 
 
 if __name__ == "__main__":

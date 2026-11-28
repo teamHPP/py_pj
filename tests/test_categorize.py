@@ -368,6 +368,143 @@ class ApplyUncategorizedTest(StoreCase):
         self.assertEqual(data["expenses"][3]["category"], "  ")
 
 
+class SetCategoryTest(StoreCase):
+    """확장 필수: 분류 직접 지정(사람이 정한 분류는 다시 분류할 때 안 바뀌게 고정)."""
+
+    def setUp(self):
+        super().setUp()
+        self.rules = [categorize.add_rule([], "식비", ["저녁"])]
+        self.store.data["expenses"].append(expense(id=1, category=None, memo="회의 후 저녁"))
+        self.e = self.store.data["expenses"][0]
+
+    def test_set_fixes_and_records(self):
+        history = len(self.store.data["history"])
+        result = categorize.set_category(self.store, 1, " 행사 ")
+        self.assertEqual((self.e["category"], self.e["category_fixed"]), ("행사", True))
+        self.assertEqual(result, self.e)
+        result["category"] = "바꿈"   # 돌려준 값은 복사본
+        self.assertEqual(self.e["category"], "행사")
+        added = self.store.data["history"][history:]
+        self.assertEqual([(h["action"], h["id"]) for h in added], [("edit", 1)])
+        self.assertNotIn("category_fixed", added[0]["before"])
+        self.assertEqual(added[0]["after"]["category_fixed"], True)
+
+    def test_fixed_survives_apply_until_unfixed(self):
+        categorize.set_category(self.store, 1, "행사")
+        self.assertEqual(categorize.apply_rules(self.store, self.rules), [])
+        self.assertEqual(self.e["category"], "행사")
+        categorize.unfix_category(self.store, 1)
+        self.assertEqual((self.e["category"], self.e["category_fixed"]), ("행사", False))   # 이름은 그대로
+        self.assertEqual(categorize.apply_rules(self.store, self.rules), [(1, "행사", "식비")])
+
+    def test_no_change_no_history(self):
+        categorize.set_category(self.store, 1, "행사")
+        history = len(self.store.data["history"])
+        categorize.set_category(self.store, 1, "행사")
+        categorize.unfix_category(self.store, 1)
+        categorize.unfix_category(self.store, 1)
+        self.assertEqual(len(self.store.data["history"]), history + 1)   # 고정 풀기 한 번만
+
+    def test_errors_change_nothing(self):
+        self.store.data["expenses"].append(expense(id=2, deleted=True))
+        self.store.data["expenses"].append(expense(id=3, date="2026-11-30"))
+        self.store.data["locks"] = [{"start": "2026-11-30", "end": "2026-11-30"}]
+        before = copy.deepcopy(self.store.data)
+        cases = [(1, ""), (1, "  "), (1, None), (1, 3), (9, "식비"), (True, "식비"), (2, "식비"), (3, "식비")]
+        for eid, category in cases:
+            with self.subTest(eid=eid, category=category):
+                with self.assertRaises(ValueError):
+                    categorize.set_category(self.store, eid, category)
+        for eid in (9, True, 2, 3):
+            with self.subTest(eid=eid):
+                with self.assertRaises(ValueError):
+                    categorize.unfix_category(self.store, eid)
+        self.assertEqual(self.store.data, before)
+
+
+class SummaryTest(StoreCase):
+    """확장 필수: 분류별 건수·금액 집계(category_totals 로 제공)."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.data["expenses"].extend([
+            expense(id=1, date="2026-11-03", amount=12000, category="교통"),
+            expense(id=2, date="2026-11-17", amount=9000, category="식비"),
+            expense(id=3, date="2026-11-20", amount=3000, category=None),
+            expense(id=4, date="2026-11-25", amount=8000, category="교통"),
+            expense(id=5, date="2026-11-26", amount=5000, category="식비", deleted=True),
+            expense(id=6, date="2026-12-01", amount=7000, category="식비"),
+        ])
+
+    def test_same_as_category_totals(self):
+        for start, end in (("2026-11-01", "2026-11-30"), (None, None), ("2026-12-01", "2026-12-31"),
+                           ("2027-01-01", "2027-01-31")):
+            with self.subTest(start=start, end=end):
+                self.assertEqual(categorize.summary(self.store, start, end),
+                                 category_totals(self.store, start, end))
+        self.assertEqual(categorize.summary(self.store, "2026-11-01", "2026-11-30"),
+                         {"교통": {"count": 2, "amount": 20000}, "식비": {"count": 1, "amount": 9000},
+                          "미분류": {"count": 1, "amount": 3000}})
+
+    def test_new_dict_and_errors(self):
+        before = copy.deepcopy(self.store.data)
+        first = categorize.summary(self.store, None, None)
+        first["교통"]["amount"] = 0
+        self.assertEqual(categorize.summary(self.store, None, None)["교통"]["amount"], 20000)
+        self.assertEqual(self.store.data, before)
+        with self.assertRaises(ValueError):
+            categorize.summary(self.store, "2026-11-30", "2026-11-01")
+
+    def test_command(self):
+        from moim import cli
+        out = []
+        changed = cli.run(cli.build_parser().parse_args(["cat", "summary", "--month", "2026-11"]),
+                          self.cfg, self.store, out.append)
+        self.assertFalse(changed)
+        self.assertEqual(out[0], "분류별 집계: 2026-11-01 ~ 2026-11-30")
+        lines = out[1].split("\n")
+        self.assertEqual(lines[0].split(), ["분류", "건수", "금액"])
+        self.assertEqual([line.split() for line in lines[2:5]],
+                         [["교통", "2", "20,000"], ["식비", "1", "9,000"], ["미분류", "1", "3,000"]])
+        self.assertEqual(lines[-1].split(), ["합계", "4", "32,000"])
+        out.clear()
+        cli.run(cli.build_parser().parse_args(["cat", "summary", "--month", "2027-01"]),
+                self.cfg, self.store, out.append)
+        self.assertEqual(out, ["2027-01-01 ~ 2027-01-31 기간에 지출이 없습니다"])
+        with self.assertRaises(ValueError):
+            cli.run(cli.build_parser().parse_args(["cat", "summary"]), self.cfg, self.store, out.append)
+
+
+class OverlapsTest(unittest.TestCase):
+    """선택: 규칙 겹침 검사(같은 키워드가 서로 다른 분류의 규칙에 함께 있는 경우)."""
+
+    def test_overlaps(self):
+        rules = []
+        categorize.add_rule(rules, "식비", ["저녁", "회식"])        # 0
+        categorize.add_rule(rules, "행사", ["회식", "현수막"])      # 1
+        categorize.add_rule(rules, "식비", ["저녁", "점심"])        # 2  같은 분류(0)와는 겹침 아님
+        categorize.add_rule(rules, "음료", ["저녁", "회식"])        # 3
+        categorize.add_rule(rules, "물품", payer="양정현")          # 4  키워드 없음
+        self.assertEqual(categorize.overlaps(rules),
+                         [(0, 1, "회식"), (0, 3, "저녁"), (0, 3, "회식"), (1, 3, "회식"), (2, 3, "저녁")])
+
+    def test_no_overlap_and_unchanged(self):
+        rules = []
+        categorize.add_rule(rules, "식비", ["저녁"])
+        categorize.add_rule(rules, "교통", ["택시"])
+        categorize.add_rule(rules, "식비", ["저녁"])
+        before = copy.deepcopy(rules)
+        self.assertEqual(categorize.overlaps(rules), [])
+        self.assertEqual(categorize.overlaps([]), [])
+        self.assertEqual(rules, before)
+
+    def test_bad_rules(self):
+        for bad in (None, [{"category": "식비"}], [{"category": "식비", "keywords": "저녁"}]):
+            with self.subTest(rules=bad):
+                with self.assertRaises(ValueError):
+                    categorize.overlaps(bad)
+
+
 class RuleCommandsTest(StoreCase):
     """기본 필수: 규칙 추가·삭제·목록 명령 (moim cat add/remove/list)."""
 
@@ -406,6 +543,29 @@ class RuleCommandsTest(StoreCase):
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].startswith("2번 2026-11-18"))
         self.assertIn("9,000원 현수막", out[0])
+
+    def test_set_and_unfix(self):
+        self.store.data["expenses"].append(expense(id=1, category=None, memo="회의 후 저녁"))
+        changed, out = self.run_cmd(["cat", "set", "1", "행사"])
+        self.assertTrue(changed)
+        self.assertIn("1번 지출의 분류를 행사", out[0])
+        self.assertFalse(self.run_cmd(["cat", "set", "1", "행사"])[0])   # 같은 분류로 다시 정하면 저장할 것 없음
+        self.run_cmd(["cat", "add", "식비", "--keywords", "저녁"])
+        self.assertEqual(self.run_cmd(["cat", "apply"]), (False, ["바뀌는 지출이 없습니다"]))
+        changed, out = self.run_cmd(["cat", "unfix", "1"])
+        self.assertTrue(changed)
+        self.assertIn("고정을 풀었습니다", out[0])
+        self.assertFalse(self.run_cmd(["cat", "unfix", "1"])[0])
+        self.assertTrue(self.run_cmd(["cat", "apply"])[0])
+        self.assertEqual(self.store.data["expenses"][0]["category"], "식비")
+        with self.assertRaises(ValueError):
+            self.run_cmd(["cat", "set", "9", "식비"])     # 없는 번호
+
+    def test_check(self):
+        self.assertEqual(self.run_cmd(["cat", "check"]), (False, ["겹치는 규칙이 없습니다"]))
+        self.run_cmd(["cat", "add", "식비", "--keywords", "저녁;회식"])
+        self.run_cmd(["cat", "add", "행사", "--keywords", "회식"])
+        self.assertEqual(self.run_cmd(["cat", "check"]), (False, ["키워드 '회식': 1번 식비 / 2번 행사"]))
 
     def test_errors(self):
         with self.assertRaises(ValueError):

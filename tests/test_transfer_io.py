@@ -611,6 +611,81 @@ class VerifyExportTest(ExportData):
                                "참고: 건수가 다릅니다(파일 2건, 기록 4건)"])
 
 
+class RoundtripTest(ExportData):
+    """선택 "내보낸 파일을 다시 읽어 원래 기록과 똑같은지 대조": roundtrip_check. 자료는 ExportData(1·2·3·5번, 4번 삭제)."""
+
+    def test_same_after_export(self):
+        for name, fn in (("r.csv", transfer_io.export_csv), ("r.json", transfer_io.export_json)):
+            p = self.path(name)
+            with self.subTest(file=name):
+                fn(self.store, p)
+                self.assertEqual(transfer_io.roundtrip_check(self.store, p), [])
+                fn(self.store, p, "2026-11-01", "2026-11-30", "교통")          # 기간·분류를 골라 내보낸 파일
+                self.assertEqual(transfer_io.roundtrip_check(self.store, p, "2026-11-01", "2026-11-30", "교통"), [])
+
+    def test_record_changed_after_export(self):
+        for name, fn in (("r.csv", transfer_io.export_csv), ("r.json", transfer_io.export_json)):
+            p = self.path(name)
+            with self.subTest(file=name):
+                fn(self.store, p)
+                before = copy.deepcopy(self.store.data)
+                self.store.get_expense(2)["memo"] = "고침"                     # 내용이 바뀐 지출
+                self.store.get_expense(3)["deleted"] = True                     # 기록에서 빠진 지출(파일에만 있음)
+                self.store.get_expense(4)["deleted"] = False                    # 기록에 새로 생긴 지출(파일에 없음)
+                self.assertEqual(transfer_io.roundtrip_check(self.store, p), [2, 3, 4])
+                self.store.data = before
+
+    def test_file_edited(self):
+        p = self.path("r.csv")
+        transfer_io.export_csv(self.store, p)
+        with open(p, encoding="utf-8-sig") as f:
+            text = f.read()
+        with open(p, "w", encoding="utf-8-sig", newline="") as f:
+            f.write(text.replace("3000,", "3001,", 1) + "1,2026-10-31,양정현,3000,양정현;신동훈;이은경,,식비,회의 후 저녁\n")
+        self.assertEqual(transfer_io.roundtrip_check(self.store, p), [1])      # 금액 바뀜 + 같은 번호가 두 번
+
+    def test_csv_resaved_as_cp949(self):
+        # 엑셀에서 다시 저장하면 BOM 없는 CP949 가 될 수 있다. read_csv_rows 가 판별해서 그대로 대조한다
+        p = self.path("r.csv")
+        transfer_io.export_csv(self.store, p)
+        with open(p, encoding="utf-8-sig") as f:
+            text = f.read()
+        with open(p, "w", encoding="cp949", newline="") as f:
+            f.write(text)
+        self.assertEqual(transfer_io.roundtrip_check(self.store, p), [])
+
+    def test_does_not_change_store(self):
+        p = self.path("r.json")
+        transfer_io.export_json(self.store, p)
+        before = copy.deepcopy(self.store.data)
+        transfer_io.roundtrip_check(self.store, p)
+        self.assertEqual(self.store.data, before)
+
+    def test_bad_files(self):
+        with self.assertRaises(OSError):
+            transfer_io.roundtrip_check(self.store, self.path("없음.csv"))
+        for name, text in (("a.csv", "amount\n100\n"), ("b.csv", "id,amount\nx,100\n"), ("c.csv", "id,amount\n1\n"),
+                           ("d.json", "{}"), ("e.json", "[1]"), ("f.json", '[{"amount": 1}]')):
+            p = self.path(name)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(text)
+            with self.subTest(file=name), self.assertRaises(ValueError):
+                transfer_io.roundtrip_check(self.store, p)
+
+    def test_roundtrip_command(self):
+        from moim import cli
+        p = self.path("cmd.csv")
+        transfer_io.export_csv(self.store, p, "2026-11-01", "2026-11-30")
+        out = []
+        args = cli.build_parser().parse_args(["io", "roundtrip", p, "--month", "2026-11"])
+        self.assertFalse(cli.run(args, self.cfg, self.store, out.append))     # 조회만 하므로 저장 안 함
+        self.store.get_expense(2)["amount"] = 6001
+        cli.run(args, self.cfg, self.store, out.append)
+        self.assertEqual(out, ["똑같습니다: 지출 2건 모두 원래 기록과 같음", "원래 기록과 다른 지출 1건: 2번"])
+        for line in out:
+            line.encode("cp949")
+
+
 class ImportCsvTest(StoreCase):
     """import_csv: CSV 가져오기, 열 이름 연결, 오류 줄 번호. 명부는 규격 2장의 S."""
 
@@ -723,11 +798,48 @@ class ImportCsvTest(StoreCase):
         before = copy.deepcopy(self.store.data)
         with self.assertRaises(ValueError):
             self.imp("date,amount\n2026-11-17,1000\n")       # payer 열 없음
-        with self.assertRaises(NotImplementedError):        # 미리 보기는 아직 구현 전
-            self.imp(self.HEAD + "2026-11-17,양정현,1000,,,,\n", preview=True)
+        with self.assertRaises(ValueError):
+            self.imp(self.HEAD + "2026-11-17,양정현,1000,,,,\n", preview="yes")   # preview 는 True·False 만
         with self.assertRaises(OSError):
             transfer_io.import_csv(self.store, self.path("없음.csv"))
         self.assertEqual(self.store.data, before)
+
+    def test_preview_changes_nothing(self):
+        # 선택 "가져오기 미리 보기": 저장 대신 ledger.validate 로 검사만(구현순서 PDF 6장), Store 는 그대로
+        self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n")
+        before = copy.deepcopy(self.store.data)
+        r = self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n"      # 이미 있는 지출과 같음 → 중복
+                                 "2026-11-18,이은경,500,,,,\n"
+                                 "2026-11-18,이은경,500,,,,\n"      # 파일 앞줄과 같음 → 중복
+                                 "2026-13-01,이은경,1,,,,\n"        # 없는 날짜 → 오류
+                                 "2026-11-19,양정현,700,,,,\n", preview=True)
+        self.assertEqual(r, {"encoding": "utf-8-sig", "added": [3, 6], "duplicates": [2, 4],
+                             "errors": [(5, r["errors"][0][1])]})          # added 에는 들어갈 줄 번호
+        self.assertIn("날짜", r["errors"][0][1])
+        self.assertEqual(self.store.data, before)                     # 지출·번호·이력 모두 그대로
+
+    def test_preview_matches_real_import(self):
+        text = (self.HEAD + "2026-11-17,양정현,9000,,,,\n2026-11-17,양정현,9000,,,,\n"
+                "2026-11-18,없는사람,1,,,,\n2026-11-30,신동훈,300,,,,\n2026-12-01,양정현,400,신동훈,,,\n")
+        p = self.imp(text, preview=True)
+        r = self.imp(text)
+        self.assertEqual((p["duplicates"], p["errors"]), (r["duplicates"], r["errors"]))
+        self.assertEqual(p["added"], [2, 5])                         # 실제로 들어간 줄
+        self.assertEqual(r["added"], [1, 2])                         # 실제로 매긴 지출 번호
+
+    def test_preview_command(self):
+        from moim import cli
+        p = self.write("날짜,낸 사람,금액\n2026-11-17,양정현,9000\n2026-11-17,양정현,9000\n2026-11-31,양정현,1\n")
+        argv = ["io", "import", p, "--map", "날짜=date;낸 사람=payer;금액=amount"]
+        out = []
+        self.assertFalse(cli.run(cli.build_parser().parse_args(argv + ["--preview"]), self.cfg, self.store,
+                                 out.append))                        # 미리 보기는 저장하지 않음
+        self.assertEqual(out[:2], ["미리 보기(utf-8-sig): 들어갈 줄 1개 - 2번 줄 (아직 넣지 않았습니다)",
+                                   "중복이라 건너뜀: 3번 줄"])
+        self.assertTrue(out[2].startswith("오류 4번 줄: 날짜가 잘못되었습니다"))
+        self.assertEqual(self.store.data["expenses"], [])
+        for line in out:
+            line.encode("cp949")
 
     def test_import_command(self):
         from moim import cli
@@ -775,6 +887,130 @@ class ImportCsvTest(StoreCase):
             with self.subTest(line=line):
                 line.encode("cp949")
 
+
+class MergeTest(StoreCase):
+    """merge: 다른 모임 자료(자료 파일 형식)의 회원·지출 합치기. 이 모임 명부는 규격 2장의 S."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.data["members"] = [
+            {"name": "양정현", "joined": "2026-09-01", "left": None},
+            {"name": "신동훈", "joined": "2026-09-01", "left": "2026-11-30"},
+            {"name": "이은경", "joined": "2026-09-01", "left": None},
+        ]
+        self.store.data["expenses"] = [dict(E)]
+        self.store.data["next_id"] = 2
+
+    def other(self, expenses, members=None, name="other.json"):
+        """다른 모임 자료 파일을 만든다(자료 파일과 같은 형식)."""
+        data = {"members": members if members is not None else [
+                    {"name": "양정현", "joined": "2026-10-01", "left": None},   # 이미 있는 사람(가입일 다름)
+                    {"name": "김정빈", "joined": "2026-10-01", "left": None}],  # 새 사람
+                "expenses": expenses, "next_id": 99}
+        p = self.path(name)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        return p
+
+    def exp(self, eid, date, payer, amount, members, **kw):
+        e = {"id": eid, "date": date, "payer": payer, "amount": amount, "members": members,
+             "category": None, "memo": "", "deleted": False, "weights": None, "recurring_id": 7}
+        e.update(kw)
+        return e
+
+    def test_merge_members_and_expenses(self):
+        p = self.other([self.exp(5, "2026-11-20", "김정빈", 6000, ["김정빈", "양정현"],
+                                 weights={"김정빈": 2}, category="식비", memo="저녁"),
+                        self.exp(3, "2026-11-18", "양정현", 3000, ["양정현"])])
+        self.assertEqual(transfer_io.merge(self.store, p), 2)
+        names = [m["name"] for m in self.store.data["members"]]
+        self.assertEqual(names, ["양정현", "신동훈", "이은경", "김정빈"])
+        self.assertEqual(self.store.member("양정현")["joined"], "2026-09-01")      # 이미 있는 사람은 그대로
+        e2, e3 = self.store.data["expenses"][1:]
+        self.assertEqual((e2["id"], e2["date"], e3["id"], e3["date"]), (2, "2026-11-18", 3, "2026-11-20"))  # 날짜순, 새 번호
+        self.assertEqual((e3["weights"], e3["category"], e3["memo"], e3["recurring_id"]),
+                         ({"김정빈": 2}, "식비", "저녁", None))                    # 다른 모임의 반복 번호는 버림
+        self.assertEqual([h["action"] for h in self.store.data["history"]], ["merge", "merge"])
+        self.assertEqual(self.store.data["next_id"], 4)
+
+    def test_skip_deleted_and_duplicates(self):
+        p = self.other([self.exp(1, "2026-11-17", "양정현", 9000, ["양정현"]),             # 이미 있는 지출과 같음
+                        self.exp(2, "2026-11-18", "이은경", 500, ["이은경"], deleted=True),  # 삭제된 지출
+                        self.exp(3, "2026-11-19", "이은경", 700, ["이은경"]),
+                        self.exp(4, "2026-11-19", "이은경", 700, ["이은경"], memo="같은 날 또")])  # 앞에서 합친 것과 같음
+        self.assertEqual(transfer_io.merge(self.store, p), 1)
+        self.assertEqual(len(self.store.data["expenses"]), 2)
+        self.assertEqual(transfer_io.merge(self.store, p), 0)             # 다시 합쳐도 늘지 않음
+
+    def test_bad_expense_skipped_rest_merged(self):
+        # 잘못된 지출은 건너뛰고 이유를 errors 에 담는다(기능 1 여러 줄 입력·기능 5 은행 가져오기와 같은 방식)
+        p = self.other([self.exp(3, "2026-11-19", "이은경", 700, ["이은경"]),
+                        self.exp(4, "2026-12-01", "신동훈", 1000, ["신동훈"]),     # 탈퇴 다음 날
+                        self.exp(5, "2026-11-20", "없는사람", 1000, ["양정현"]),
+                        self.exp(6, "2026-11-20", "양정현", 0, ["양정현"]),
+                        self.exp(7, "2026-11-20", "양정현", 1000, []),
+                        {"id": 8, "date": "2026-11-20"},
+                        self.exp(9, "2026-11-21", "김정빈", 2000, ["김정빈"])])
+        r = transfer_io.merge_detail(self.store, p)
+        self.assertEqual((r["added"], r["members"], r["duplicates"]), ([2, 3], ["김정빈"], []))
+        self.assertEqual([n for n, _ in r["errors"]], [5, 6, 7, 8, 4])        # 처리 순서(날짜순)
+        why = dict(r["errors"])
+        self.assertIn("신동훈", why[4])
+        self.assertIn("없는사람", why[5])
+        self.assertIn("1원 이상", why[6])
+        self.assertIn("참여자가 비어", why[7])
+        self.assertEqual(len(self.store.data["expenses"]), 3)
+        self.assertEqual(transfer_io.merge(self.store, p), 0)              # merge 는 합친 지출 수만 돌려줌
+
+    def test_locked_period_skipped(self):
+        self.store.data["locks"] = [{"start": "2026-11-01", "end": "2026-11-30"}]
+        p = self.other([self.exp(3, "2026-11-19", "이은경", 700, ["이은경"]),
+                        self.exp(4, "2026-12-02", "이은경", 800, ["이은경"])])
+        r = transfer_io.merge_detail(self.store, p)
+        self.assertEqual((r["added"], [n for n, _ in r["errors"]]), ([2], [3]))
+        self.assertIn("확정", r["errors"][0][1])
+
+    def test_bad_member_skipped(self):
+        p = self.other([self.exp(3, "2026-11-19", "김정빈", 700, ["김정빈"])],
+                       [{"name": "김정빈", "joined": "2026-10-01", "left": "2026-09-01"}, {"name": ""}])
+        r = transfer_io.merge_detail(self.store, p)
+        self.assertEqual(r["members"], [])
+        self.assertEqual(len(r["errors"]), 3)                              # 회원 2명 + 그 회원의 지출 1건
+        self.assertIn("탈퇴일이 가입일보다", r["errors"][0][1])
+        self.assertEqual(r["errors"][2][0], 3)
+
+    def test_bad_file(self):
+        before = copy.deepcopy(self.store.data)
+        with self.assertRaises(OSError):
+            transfer_io.merge(self.store, self.path("없음.json"))
+        for text in ("{", "[]", '{"members": []}', '{"expenses": []}'):
+            p = self.path("bad.json")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(text)
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                transfer_io.merge(self.store, p)
+        self.assertEqual(self.store.data, before)                          # 파일이 잘못되면 아무것도 안 바뀜
+
+    def test_merge_own_backup_adds_nothing(self):
+        p = self.path("same.json")
+        self.store.path = p
+        self.store.save()
+        self.assertEqual(transfer_io.merge(self.store, p), 0)
+
+    def test_merge_command(self):
+        from moim import cli
+        p = self.other([self.exp(3, "2026-11-19", "김정빈", 700, ["김정빈"]),
+                        self.exp(4, "2026-11-20", "없는사람", 100, ["양정현"])])
+        out = []
+        args = cli.build_parser().parse_args(["io", "merge", p])
+        self.assertTrue(cli.run(args, self.cfg, self.store, out.append))     # 자료를 바꿨으니 저장
+        self.assertEqual(out[0], "합쳤습니다: 지출 1건, 새 회원 1명")
+        self.assertTrue(out[1].startswith("오류(다른 모임의 4번 지출): 명부에 없거나"))
+        out.clear()
+        self.assertFalse(cli.run(args, self.cfg, self.store, out.append))    # 다시 하면 바뀐 것 없음
+        self.assertEqual(out[:2], ["합쳤습니다: 지출 0건", "중복이라 건너뜀: 다른 모임의 3번 지출"])
+        for line in out:
+            line.encode("cp949")
 
 if __name__ == "__main__":
     unittest.main()

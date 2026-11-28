@@ -204,11 +204,39 @@ def apply_rules(store, rules, preview=False):
 
 def set_category(store, eid, category):
     """분류를 직접 정한다. 다시 분류해도 바뀌지 않게 고정한다."""
-    raise NotImplementedError("이 함수를 구현한다")
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError("분류 이름을 입력하십시오")
+    e = _changeable(store, eid)
+    name = category.strip()
+    if e.get("category") == name and e.get("category_fixed", False):
+        return copy.deepcopy(e)   # 이미 같은 분류로 고정되어 있으면 바꾸지 않는다
+    before = copy.deepcopy(e)
+    e["category"], e["category_fixed"] = name, True
+    store.record("edit", e["id"], before, copy.deepcopy(e))
+    return copy.deepcopy(e)
 
 
 def unfix_category(store, eid):
-    raise NotImplementedError("이 함수를 구현한다")
+    """직접 정한 분류의 고정을 푼다. 분류 이름은 그대로 두고, 다음 다시 분류부터 규칙이 적용된다."""
+    e = _changeable(store, eid)
+    if not e.get("category_fixed", False):
+        return copy.deepcopy(e)   # 고정되어 있지 않으면 바꾸지 않는다
+    before = copy.deepcopy(e)
+    e["category_fixed"] = False
+    store.record("edit", e["id"], before, copy.deepcopy(e))
+    return copy.deepcopy(e)
+
+
+def _changeable(store, eid):
+    """분류를 바꿀 수 있는 지출 원본. 없는 번호·삭제된 지출·확정된 기간의 지출은 ValueError."""
+    if isinstance(eid, bool):
+        raise ValueError(f"지출 번호가 잘못되었습니다: {eid!r}")
+    e = store.get_expense(eid)
+    if e.get("deleted", False):
+        raise ValueError(f"삭제된 지출은 분류를 바꿀 수 없습니다: {eid}")
+    if is_locked(store, e["date"]):
+        raise ValueError(f"확정된 기간의 지출은 분류를 바꿀 수 없습니다: {e['date']}")
+    return e
 
 
 def uncategorized(store):
@@ -217,10 +245,23 @@ def uncategorized(store):
 
 
 def overlaps(rules):
-    """같은 키워드가 서로 다른 분류의 규칙에 함께 있는 경우. [(규칙 번호 i, 규칙 번호 j, 겹친 키워드)]"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """같은 키워드가 서로 다른 분류의 규칙에 함께 있는 경우. [(규칙 번호 i, 규칙 번호 j, 겹친 키워드)]
+    번호는 remove_rule 과 같이 0부터 센 목록 위치이고 i < j. (i, j) 순서, 키워드는 규칙 i 에 적힌 순서."""
+    _check_rules(rules)
+    found = []
+    for i, first in enumerate(rules):
+        for j in range(i + 1, len(rules)):
+            second = rules[j]
+            if first["category"].strip() == second["category"].strip():
+                continue   # 같은 분류끼리는 겹쳐도 분류 결과가 같다
+            others = {w.strip() for w in second.get("keywords", [])}
+            for word in first.get("keywords", []):
+                if word.strip() in others:
+                    found.append((i, j, word.strip()))
+    return found
 
 
 def summary(store, start, end):
-    """분류별 건수·금액(공통 모듈의 분류 조회 사용)."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """분류별 건수·금액(공통 모듈의 분류 조회 사용).
+    {분류: {"count": n, "amount": 원}}. 지출 고르기·분류 이름·순서·오류는 queries.category_totals(04)를 그대로 따른다."""
+    return category_totals(store, start, end)

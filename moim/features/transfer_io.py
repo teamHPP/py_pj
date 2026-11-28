@@ -17,6 +17,7 @@ import os
 from ..common import cliutil, dates, ledger, money
 from ..common.csvio import detect_encoding, read_csv_rows  # noqa: F401
 from ..common.queries import active_members, category_of, expenses_in, period_total
+from ..common.store import Store
 
 # CSV 열 순서. 열 이름은 지출 필드 이름 그대로 써서 다시 읽을 때(read_csv_rows) 연결 없이 읽히게 한다.
 CSV_FIELDS = ["id", "date", "payer", "amount", "members", "weights", "category", "memo"]
@@ -103,7 +104,8 @@ def _csv_amounts(path):
     return amounts
 
 
-def _json_amounts(path):
+def _load_json_items(path):
+    """export_json 이 쓴 파일 → 지출 dict 목록. 모양이 틀리면 ValueError."""
     with open(path, encoding="utf-8-sig") as f:
         try:
             items = json.load(f)
@@ -111,12 +113,14 @@ def _json_amounts(path):
             raise ValueError(f"JSON 형식이 잘못되었습니다: {exc}") from None
     if not isinstance(items, list):
         raise ValueError("JSON 파일은 지출 목록([...])이어야 합니다")
-    amounts = []
     for i, e in enumerate(items, 1):
         if not isinstance(e, dict):
             raise ValueError(f"{i}번째 지출: 지출은 객체({{...}})여야 합니다")
-        amounts.append(_amount(e.get("amount"), f"{i}번째 지출"))
-    return amounts
+    return items
+
+
+def _json_amounts(path):
+    return [_amount(e.get("amount"), f"{i}번째 지출") for i, e in enumerate(_load_json_items(path), 1)]
 
 
 def file_total(path):
@@ -154,9 +158,54 @@ def export_count(store, start=None, end=None, category=None):
     return len(_selected(store, start, end, category))
 
 
+def _file_id(value, where):
+    try:
+        eid = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{where}: 지출 번호(id)가 잘못되었습니다: {value!r}") from None
+    if eid < 1:
+        raise ValueError(f"{where}: 지출 번호(id)가 잘못되었습니다: {value!r}")
+    return eid
+
+
+def _file_records(path):
+    """내보낸 파일 → [(번호, 비교할 값)]. CSV 는 CSV_FIELDS 열의 글자, JSON 은 지출 dict 그대로."""
+    if os.fspath(path).lower().endswith(".json"):
+        return [(_file_id(e.get("id"), f"{i}번째 지출"), e) for i, e in enumerate(_load_json_items(path), 1)]
+    _, rows = read_csv_rows(path)
+    if rows and "id" not in rows[0][1]:
+        raise ValueError(f"CSV에 id 열이 없습니다(export_csv 로 내보낸 파일이어야 합니다): {path}")
+    records = []
+    for line, row in rows:
+        if None in row or None in row.values():
+            raise ValueError(f"{line}번 줄: 열 수가 머리글과 다릅니다")
+        records.append((_file_id(row["id"], f"{line}번 줄"), {k: row.get(k) for k in CSV_FIELDS}))
+    return records
+
+
 def roundtrip_check(store, path, start=None, end=None, category=None):
-    """내보낸 파일을 다시 읽어 원래 기록과 똑같은지 대조. 다른 번호 목록을 돌려준다(비어 있으면 같음)."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """내보낸 파일을 다시 읽어 원래 기록과 똑같은지 대조. 다른 번호 목록을 돌려준다(비어 있으면 같음).
+
+    - 원래 기록은 내보낼 때와 같은 기준(_selected: expenses_in + category_of, 삭제 제외)으로 고른다
+    - CSV 는 export_csv 가 쓰는 글자(_csv_row)와 열마다, JSON 은 export_json 이 쓰는 지출 dict 전체와 비교한다
+    - 다른 번호: 내용이 다른 지출, 기록에만 있는 지출, 파일에만 있는 번호, 파일 안에서 겹친 번호. 오름차순
+    - 확장자가 .json 이면 JSON, 아니면 CSV(read_csv_rows 로 읽어 UTF-8·CP949 모두 읽음)
+    - id 열·값이 잘못된 파일, 열 수가 다른 줄, JSON 모양 오류는 ValueError. 파일이 없으면 OSError
+    """
+    is_json = os.fspath(path).lower().endswith(".json")
+    expected = {}
+    for e in _selected(store, start, end, category):
+        if is_json:
+            expected[e["id"]] = json.loads(json.dumps(e, ensure_ascii=False))   # 파일에 쓴 모양 그대로
+        else:
+            expected[e["id"]] = {k: "" if v is None else str(v) for k, v in _csv_row(e).items()}
+    seen, differ = set(), set()
+    for eid, record in _file_records(path):
+        if eid in seen or expected.get(eid) != record:
+            differ.add(eid)
+        seen.add(eid)
+    differ |= set(expected) - seen
+    return sorted(differ)
 
 
 IMPORT_REQUIRED = ("date", "payer", "amount")
@@ -192,9 +241,11 @@ def import_csv(store, path, mapping=None, encoding=None, preview=False):
     - 오류 줄은 건너뛰고 나머지는 넣는다. 파일에 date·payer·amount 열이 없으면 ValueError(아무것도 넣지 않음)
     - 중복 줄은 넣지 않고 줄 번호를 duplicates 에 담는다. 같은 날·같은 낸 사람·같은 금액의 지출이
       이미 있거나(ledger.duplicates, 삭제된 지출 제외) 파일의 앞줄과 같으면 중복이다. 오류 검사가 먼저다
+    - 미리 보기(preview=True): 저장 대신 ledger.validate 로 검사만 하고 Store 는 전혀 바꾸지 않는다.
+      같은 파일을 실제로 가져올 때와 같은 줄이 added(줄 번호)·duplicates·errors 로 나온다
     """
-    if preview:
-        raise NotImplementedError("가져오기 미리 보기는 아직 구현 전입니다")
+    if not isinstance(preview, bool):
+        raise ValueError(f"preview 는 True 나 False 여야 합니다: {preview!r}")
     used, rows = read_csv_rows(path, mapping, encoding)
     missing = [f for f in IMPORT_REQUIRED if rows and f not in rows[0][1]]
     if missing:
@@ -212,6 +263,9 @@ def import_csv(store, path, mapping=None, encoding=None, preview=False):
             result["duplicates"].append(line)
             continue
         seen.add(key)
+        if preview:                      # 넣지 않고 들어갈 줄 번호만 적는다(_import_row 가 validate 검사까지 함)
+            result["added"].append(line)
+            continue
         try:
             e = ledger.insert(store, day, payer, amount, members, memo, weights, category, action="import")
         except ValueError as exc:
@@ -229,6 +283,67 @@ def restore_all(store, path):
     raise NotImplementedError("이 함수를 구현한다")
 
 
+def _merge_member(m):
+    """다른 모임 명부의 회원 한 명 → {"name", "joined", "left"}. 잘못되면 ValueError."""
+    if not isinstance(m, dict) or not isinstance(m.get("name"), str) or not m["name"].strip():
+        raise ValueError(f"회원 자료가 잘못되었습니다: {m!r}")
+    joined = dates.fmt(m.get("joined"))
+    left = dates.fmt(m["left"]) if m.get("left") is not None else None
+    if left is not None and left < joined:
+        raise ValueError(f"탈퇴일이 가입일보다 빠릅니다: {m['name']} {left} < {joined}")
+    return {"name": m["name"].strip(), "joined": joined, "left": left}
+
+
+def merge_detail(store, other_path):
+    """다른 모임 자료를 합치고 결과를 자세히 돌려준다. merge 가 이 함수를 쓴다(io merge 명령이 결과를 보여 준다).
+
+    돌려주는 값: {"added": [새 지출 번호], "members": [새로 더한 이름], "duplicates": [다른 모임 지출 번호],
+                 "errors": [(다른 모임 지출 번호 또는 회원 이름, 이유)]}
+    - other_path 는 자료 파일(data.json)과 같은 형식. 없으면 OSError, 자료 파일 형식이 아니면 ValueError(아무것도 안 바꿈)
+    - 회원: 이 모임 명부에 없는 이름만 더한다(이미 있는 사람의 가입일·탈퇴일은 바꾸지 않는다). 잘못된 회원은 errors
+    - 지출: 삭제 표시된 지출은 빼고, 날짜·번호 순으로 ledger.validate 검사 뒤 ledger.insert(action="merge")
+      같은 날·같은 낸 사람·같은 금액의 지출이 이미 있거나(ledger.duplicates) 앞에서 합친 것과 같으면 duplicates
+    - 잘못된 지출(명부·회원 기간·잠긴 기간·금액 등)은 건너뛰고 errors 에 이유를 담는다. 나머지는 합친다
+      (기능 1 여러 줄 입력·기능 5 은행 거래내역 가져오기와 같은 방식)
+    """
+    if not os.path.isfile(other_path):
+        raise FileNotFoundError(f"합칠 자료 파일이 없습니다: {other_path}")
+    try:
+        other = Store(other_path).load().data
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"자료 파일 형식이 아닙니다(JSON 오류): {exc}") from None
+    result = {"added": [], "members": [], "duplicates": [], "errors": []}
+    for m in other["members"]:
+        try:
+            m = _merge_member(m)
+        except ValueError as exc:
+            name = m.get("name") if isinstance(m, dict) else m
+            result["errors"].append((f"회원 {name!r}", str(exc)))
+            continue
+        if store.member(m["name"]) is None:
+            store.data["members"].append(m)
+            result["members"].append(m["name"])
+    items = [e for e in other["expenses"] if isinstance(e, dict) and not e.get("deleted", False)]
+    items.sort(key=lambda e: (str(e.get("date")), str(e.get("id"))))
+    for e in items:
+        try:
+            day, amount = ledger.validate(store, e.get("date"), e.get("payer"), e.get("amount"),
+                                          e.get("members"), e.get("weights"))
+            if ledger.duplicates(store, day, e["payer"], amount):
+                result["duplicates"].append(e.get("id"))
+                continue
+            new = ledger.insert(store, day, e["payer"], amount, e["members"], e.get("memo") or "",
+                                e.get("weights"), e.get("category"), action="merge")
+        except (ValueError, KeyError, TypeError) as exc:
+            result["errors"].append((e.get("id"), str(exc)))
+            continue
+        result["added"].append(new["id"])
+    return result
+
+
 def merge(store, other_path):
-    """다른 모임 자료(백업 파일)의 회원·지출을 합친다. 지출 번호는 새로 매긴다. 돌려주는 값: 합친 지출 수"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """다른 모임 자료(백업 파일)의 회원·지출을 합친다. 지출 번호는 새로 매긴다. 돌려주는 값: 합친 지출 수
+
+    - 규칙과 건너뛰는 경우는 merge_detail 과 같다(중복·삭제된 지출·잘못된 지출은 합치지 않는다)
+    """
+    return len(merge_detail(store, other_path)["added"])
