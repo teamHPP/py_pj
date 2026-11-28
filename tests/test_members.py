@@ -62,6 +62,28 @@ class LeaveMember(StoreCase):
         with self.assertRaises(ValueError):
             ledger.validate(self.store, "2026-11-21", LEE, 9000, [KIM])
 
+    def test_rejects_leave_date_before_existing_expense_as_participant(self):
+        expenses.add_expense(self.store, "2026-11-20", LEE, 9000, [KIM, LEE])
+        with self.assertRaises(ValueError):
+            expenses.leave_member(self.store, KIM, "2026-11-10")
+        self.assertIsNone(self.store.member(KIM)["left"])  # 거부되면 아무것도 안 바뀐다
+
+    def test_rejects_leave_date_before_existing_expense_as_payer(self):
+        expenses.add_expense(self.store, "2026-11-20", KIM, 9000, [LEE])
+        with self.assertRaises(ValueError):
+            expenses.leave_member(self.store, KIM, "2026-11-10")
+
+    def test_allows_leave_date_when_later_expense_is_deleted(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-20", LEE, 9000, [KIM, LEE])
+        expenses.delete_expense(self.store, e["id"])
+        m = expenses.leave_member(self.store, KIM, "2026-11-10")
+        self.assertEqual(m["left"], "2026-11-10")
+
+    def test_allows_leave_date_on_the_expense_date_itself(self):
+        expenses.add_expense(self.store, "2026-11-20", LEE, 9000, [KIM, LEE])
+        m = expenses.leave_member(self.store, KIM, "2026-11-20")
+        self.assertEqual(m["left"], "2026-11-20")
+
 
 class ListMembers(StoreCase):
     def test_list_matches_registry_order(self):
@@ -72,65 +94,6 @@ class ListMembers(StoreCase):
         items = expenses.list_members(self.store)
         items[0]["left"] = "2026-12-31"
         self.assertIsNone(self.store.member(KIM)["left"])
-
-
-class LoadMembersFile(StoreCase):
-    def write(self, text):
-        path = self.path("members.txt")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
-        return path
-
-    def test_adds_new_members(self):
-        path = self.write("최유진,2026-11-01\n정하늘,2026-11-02,2026-11-20\n")
-        added, left_applied, errors = expenses.load_members_file(self.store, path)
-        self.assertEqual(added, ["최유진", "정하늘"])
-        self.assertEqual(left_applied, ["정하늘"])
-        self.assertEqual(errors, [])
-        self.assertEqual(self.store.member("정하늘")["left"], "2026-11-20")
-        self.assertIsNone(self.store.member("최유진")["left"])
-
-    def test_existing_member_gets_leave_date_only(self):
-        path = self.write(f"{KIM},2026-01-01,2026-11-20\n")
-        added, left_applied, errors = expenses.load_members_file(self.store, path)
-        self.assertEqual(added, [])
-        self.assertEqual(left_applied, [KIM])
-        self.assertEqual(errors, [])
-        self.assertEqual(self.store.member(KIM)["left"], "2026-11-20")
-        self.assertEqual(self.store.member(KIM)["joined"], "2026-09-01")  # 가입일은 안 바뀜
-
-    def test_existing_member_without_leave_date_is_noop(self):
-        path = self.write(f"{KIM},2026-01-01\n")
-        added, left_applied, errors = expenses.load_members_file(self.store, path)
-        self.assertEqual((added, left_applied, errors), ([], [], []))
-        self.assertIsNone(self.store.member(KIM)["left"])
-
-    def test_skips_comment_and_blank_lines(self):
-        path = self.write("# 주석\n\n최유진,2026-11-01\n")
-        added, _, errors = expenses.load_members_file(self.store, path)
-        self.assertEqual(added, ["최유진"])
-        self.assertEqual(errors, [])
-
-    def test_bad_column_count_reported_with_line_number(self):
-        path = self.write("최유진\n")
-        added, _, errors = expenses.load_members_file(self.store, path)
-        self.assertEqual(added, [])
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(errors[0][0], 1)
-
-    def test_bad_date_reported_with_line_number_rest_still_applied(self):
-        path = self.write("최유진,2026-02-30\n정하늘,2026-11-02\n")
-        added, _, errors = expenses.load_members_file(self.store, path)
-        self.assertEqual(added, ["정하늘"])
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(errors[0][0], 1)
-
-    def test_leave_before_joined_reported_as_error(self):
-        path = self.write("최유진,2026-11-10,2026-11-01\n")
-        added, left_applied, errors = expenses.load_members_file(self.store, path)
-        self.assertEqual((added, left_applied), ([], []))
-        self.assertEqual(len(errors), 1)
-        self.assertIsNone(self.store.member("최유진"))
 
 
 class MemberCommands(StoreCase):

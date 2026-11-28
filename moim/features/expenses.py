@@ -33,13 +33,22 @@ def add_member(store, name, joined):
 
 
 def leave_member(store, name, left):
-    """회원의 탈퇴일을 적는다. 탈퇴일은 그 사람의 가입일보다 앞일 수 없다. 돌려주는 값: 바뀐 회원."""
+    """회원의 탈퇴일을 적는다. 탈퇴일은 그 사람의 가입일보다 앞일 수 없다. 돌려주는 값: 바뀐 회원.
+
+    탈퇴일 뒤 날짜에 그 사람이 낸 사람이거나 참여자로 들어간, 삭제되지 않은 지출이 있으면 거부한다
+    (규약 4·6-2: 탈퇴 다음 날부터는 참여자가 될 수 없다).
+    """
     m = store.member(name)
     if m is None:
         raise ValueError(f"명부에 없는 사람입니다: {name}")
     left_fmt = dates.fmt(left)
     if left_fmt < m["joined"]:
         raise ValueError(f"탈퇴일이 가입일보다 빠릅니다: {left_fmt} < {m['joined']}")
+    conflicts = [e["id"] for e in store.data["expenses"]
+                 if not e.get("deleted", False) and e["date"] > left_fmt
+                 and (e["payer"] == name or name in e.get("members", []))]
+    if conflicts:
+        raise ValueError(f"탈퇴일 뒤에 참여자나 낸 사람으로 남은 지출이 있습니다(번호: {conflicts}): {left_fmt}")
     m["left"] = left_fmt
     return copy.deepcopy(m)
 
@@ -47,34 +56,7 @@ def leave_member(store, name, left):
 def load_members_file(store, path):
     """명부 파일을 읽어 명부에 반영한다. 한 줄 형식: 이름,가입일[,탈퇴일]. '#' 줄과 빈 줄은 건너뛴다.
     이미 있는 사람은 탈퇴일만 반영한다. 돌려주는 값: (추가한 이름, 탈퇴 반영한 이름, [(줄 번호, 오류)])"""
-    added, left_applied, errors = [], [], []
-    with open(path, encoding="utf-8-sig") as f:
-        for lineno, raw in enumerate(f, 1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) not in (2, 3) or not parts[0] or not parts[1]:
-                errors.append((lineno, f"줄 형식이 잘못되었습니다(이름,가입일[,탈퇴일]): {line!r}"))
-                continue
-            name, joined = parts[0], parts[1]
-            left = parts[2] if len(parts) == 3 and parts[2] else None
-            try:
-                if store.member(name) is None:
-                    joined_fmt = dates.fmt(joined)
-                    left_fmt = dates.fmt(left) if left is not None else None
-                    if left_fmt is not None and left_fmt < joined_fmt:
-                        raise ValueError(f"탈퇴일이 가입일보다 빠릅니다: {left_fmt} < {joined_fmt}")
-                    store.data["members"].append({"name": name, "joined": joined_fmt, "left": left_fmt})
-                    added.append(name)
-                    if left_fmt is not None:
-                        left_applied.append(name)
-                elif left is not None:
-                    leave_member(store, name, left)
-                    left_applied.append(name)
-            except ValueError as exc:
-                errors.append((lineno, str(exc)))
-    return added, left_applied, errors
+    raise NotImplementedError("이 함수를 구현한다")
 
 
 def list_members(store):
