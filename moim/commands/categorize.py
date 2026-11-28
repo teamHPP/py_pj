@@ -5,7 +5,7 @@ run 은 자료를 바꿨으면 True 를 돌려준다(통합 실행 틀이 그때
 인자 해석은 common/cliutil.py 의 _members(참여자), _weights(비율), _period(기간)를 쓴다.
 """
 
-from ..common import cliutil, money
+from ..common import cliutil, money, textfmt
 from ..features import categorize
 
 GROUP = 'cat'
@@ -38,6 +38,8 @@ def add_parser(sub, period_args):
 
     s = grp.add_parser("unfix", help="직접 정한 분류의 고정 풀기")
     s.add_argument("id", type=int, help="지출 번호")
+
+    period_args(grp.add_parser("summary", help="분류별 건수·금액"))
     return grp
 
 
@@ -115,6 +117,18 @@ def run(c, args, cfg, store, out):
             e = categorize.unfix_category(store, args.id)
             out(f"{e['id']}번 지출의 분류 고정을 풀었습니다(다음 cat apply부터 규칙으로 다시 분류됩니다)")
         return (e.get("category"), e.get("category_fixed", False)) != before
+
+    if c == "summary":
+        start, end = cliutil._period(args)
+        totals = categorize.summary(store, start, end)
+        if not totals:
+            out(f"{start} ~ {end} 기간에 지출이 없습니다")
+            return False
+        rows = [[name, v["count"], v["amount"]] for name, v in totals.items()]
+        total = ["합계", sum(v["count"] for v in totals.values()), sum(v["amount"] for v in totals.values())]
+        out(f"분류별 집계: {start} ~ {end}")
+        out(textfmt.table(["분류", "건수", "금액"], rows, total=total, numeric={1, 2}))
+        return False
 
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False

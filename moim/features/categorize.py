@@ -250,5 +250,6 @@ def overlaps(rules):
 
 
 def summary(store, start, end):
-    """분류별 건수·금액(공통 모듈의 분류 조회 사용)."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """분류별 건수·금액(공통 모듈의 분류 조회 사용).
+    {분류: {"count": n, "amount": 원}}. 지출 고르기·분류 이름·순서·오류는 queries.category_totals(04)를 그대로 따른다."""
+    return category_totals(store, start, end)
