@@ -1,6 +1,8 @@
 """팀 공동 작업 "로그": 실행한 명령과 오류를 날짜별 로그 파일(logs/YYYY-MM-DD.log)에 기록. 담당: 신동훈"""
 
+import contextlib
 import datetime as dt
+import io
 import logging
 import os
 import shutil
@@ -68,6 +70,20 @@ class GetLoggerTest(unittest.TestCase):
                 logger.error("기록 안 됨")
                 self.assertIsInstance(logger.handlers[0], logging.NullHandler)
         self.assertFalse(os.path.exists(self.dir))
+
+    def test_write_failure_is_one_line(self):
+        # 리뷰(#75) 반영: 로그 폴더 자리에 파일이 있어 쓰지 못해도 명령은 계속되고, Traceback 대신 한 줄만 나온다
+        with open(self.dir, "w", encoding="utf-8") as f:
+            f.write("폴더가 아닌 파일")
+        logger = log.get_logger(self.dir)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            logger.info("명령: budget status")
+            logger.error("오류: 이유")
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(line.startswith("로그를 남기지 못했습니다: ") for line in lines))
+        self.assertNotIn("Traceback", err.getvalue())
 
     def test_switch_dir_and_bad_value(self):
         other = os.path.join(self.tmp, "other")

@@ -9,6 +9,7 @@
 import datetime as dt
 import logging
 import os
+import sys
 
 FORMAT = "%(asctime)s %(levelname)s %(message)s"
 DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -18,7 +19,7 @@ class DailyFileHandler(logging.Handler):
     """기록마다 그 기록 시각의 날짜 파일(log_dir/YYYY-MM-DD.log, UTF-8)에 한 줄씩 덧붙인다.
 
     파일을 열어 두지 않고 기록할 때마다 열고 닫는다. 그래서 날짜가 바뀌면 다음 기록부터 새 파일에 쓰고,
-    폴더는 처음 기록할 때 만든다. 로그를 쓰다 실패해도 명령 실행은 멈추지 않는다(logging 기본 동작).
+    폴더는 처음 기록할 때 만든다. 로그를 쓰다 실패해도 명령 실행은 멈추지 않고, 이유 한 줄만 표준 오류에 남긴다.
     """
 
     def __init__(self, log_dir):
@@ -38,6 +39,14 @@ class DailyFileHandler(logging.Handler):
                 f.write(line + "\n")
         except Exception:
             self.handleError(record)
+
+    def handleError(self, record):
+        """로그를 쓰지 못하면 명령은 계속하고, 표준 오류에 이유 한 줄만 남긴다(logging 기본의 긴 Traceback 대신)."""
+        reason = sys.exc_info()[1]
+        try:
+            sys.stderr.write(f"로그를 남기지 못했습니다: {reason}\n")
+        except Exception:
+            pass
 
 
 def get_logger(log_dir):
