@@ -14,6 +14,7 @@
 """
 
 import copy
+from decimal import Decimal
 
 from ..common import dates, ledger, money
 from ..common.csvio import read_csv_rows
@@ -27,8 +28,9 @@ def month_status(store, cfg, month, today=None):
     - 월 예산은 설정 파일의 cfg["budget"]["monthly"] (0 이상의 원 단위 정수)
     - 지출은 period_total(19) 로만 센다(삭제 제외·기간 경계가 보고서·정산과 같게)
     - today 가 그달 1일보다 앞이면 지출 0. period_total 은 시작일 > 끝일이면 ValueError 라 부르기 전에 막는다
-    - 돌려주는 값: {"month", "budget", "spent", "remaining", "over"}
+    - 돌려주는 값: {"month", "budget", "spent", "remaining", "over", "warn"}
       remaining = budget - spent (넘으면 음수), over = spent > budget (정확히 예산만큼은 초과 아님)
+      warn = spent > budget x 경보 비율(설정 warn_ratio, 없으면 0.8). 80% "초과"일 때만 경보(정확히 80%는 아님)
     """
     start, end = dates.month_range(*dates.parse_month(month))
     limit = monthly_budget(cfg)
@@ -41,6 +43,7 @@ def month_status(store, cfg, month, today=None):
         "spent": spent,
         "remaining": limit - spent,
         "over": spent > limit,
+        "warn": over_warn_ratio(spent, limit, warn_ratio(cfg)),
     }
 
 
@@ -53,6 +56,27 @@ def monthly_budget(cfg):
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"월 예산은 0 이상의 원 단위 정수여야 합니다: {value!r}")
     return value
+
+
+DEFAULT_WARN_RATIO = "0.8"   # 공고문 기능 5: 예산의 80%를 넘으면 미리 경보
+
+
+def warn_ratio(cfg):
+    """설정 파일의 경보 비율 cfg["warn_ratio"](0 초과 1 이하). 없으면 0.8. 소수 오차를 피하려고 Decimal 로 돌려준다."""
+    value = cfg.get("warn_ratio") if isinstance(cfg, dict) else None
+    if value is None:
+        return Decimal(DEFAULT_WARN_RATIO)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"경보 비율은 0 초과 1 이하의 수여야 합니다: {value!r}")
+    ratio = Decimal(str(value))
+    if not Decimal(0) < ratio <= Decimal(1):
+        raise ValueError(f"경보 비율은 0 초과 1 이하의 수여야 합니다: {value!r}")
+    return ratio
+
+
+def over_warn_ratio(spent, limit, ratio):
+    """지출이 예산 x 경보 비율을 넘었는가(같으면 아님). 원 단위 정수와 Decimal 로만 비교한다."""
+    return Decimal(spent) > Decimal(limit) * ratio
 
 
 def category_status(store, cfg, month):
