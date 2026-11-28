@@ -126,8 +126,35 @@ def _payments_until(store, end):
 
 
 def unpaid(store, cfg, month):
-    """그달 회비 미납자. 그달 1일 또는 말일에 회원인 사람이 대상. [(이름, 낸 회비, 모자란 금액)]"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """그달 회비 미납자. 그달 1일 또는 말일에 회원인 사람이 대상. [(이름, 낸 회비, 모자란 금액)]
+
+    - 대상: 그달 1일이나 말일에 회원인 사람(회원 판단은 active_members → is_member_active), 명부 순서
+    - 낸 회비: 그달 1일~말일(양끝 포함)에 그 사람 이름으로 들어온 회비 입금 합계
+    - 1인당 월 회비는 설정 파일의 cfg["dues"]["monthly"](0 이상의 원 단위 정수). 낸 회비가 그보다 적은 사람만 넣는다
+    - 모두 냈으면 []. 잘못된 달·설정·자료는 이유를 담은 ValueError. Store 는 바꾸지 않는다
+    """
+    first, last = dates.month_range(*dates.parse_month(month))
+    dues = monthly_dues(cfg)
+    on_first, on_last = active_members(store, first), active_members(store, last)
+    targets = on_first + [n for n in on_last if n not in on_first]
+    order = [m["name"] for m in store.data["members"]]
+    targets.sort(key=order.index)
+    paid = {}
+    for p in _payments_until(store, last):
+        if dates.parse(p["date"]) >= first:
+            paid[p["member"]] = paid.get(p["member"], 0) + p["amount"]
+    return [(n, paid.get(n, 0), dues - paid.get(n, 0)) for n in targets if paid.get(n, 0) < dues]
+
+
+def monthly_dues(cfg):
+    """설정 파일의 1인당 월 회비 cfg["dues"]["monthly"]. 없거나 0 이상의 정수가 아니면 ValueError."""
+    section = cfg.get("dues") if isinstance(cfg, dict) else None
+    value = section.get("monthly") if isinstance(section, dict) else None
+    if value is None:
+        raise ValueError('설정 파일에 1인당 월 회비가 없습니다("dues": {"monthly": 원})')
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"1인당 월 회비는 0 이상의 원 단위 정수여야 합니다: {value!r}")
+    return value
 
 
 def dues_deduction(store, cfg, month):
