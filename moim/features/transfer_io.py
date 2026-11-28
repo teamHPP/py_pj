@@ -193,9 +193,11 @@ def import_csv(store, path, mapping=None, encoding=None, preview=False):
     - 오류 줄은 건너뛰고 나머지는 넣는다. 파일에 date·payer·amount 열이 없으면 ValueError(아무것도 넣지 않음)
     - 중복 줄은 넣지 않고 줄 번호를 duplicates 에 담는다. 같은 날·같은 낸 사람·같은 금액의 지출이
       이미 있거나(ledger.duplicates, 삭제된 지출 제외) 파일의 앞줄과 같으면 중복이다. 오류 검사가 먼저다
+    - 미리 보기(preview=True): 저장 대신 ledger.validate 로 검사만 하고 Store 는 전혀 바꾸지 않는다.
+      같은 파일을 실제로 가져올 때와 같은 줄이 added(줄 번호)·duplicates·errors 로 나온다
     """
-    if preview:
-        raise NotImplementedError("가져오기 미리 보기는 아직 구현 전입니다")
+    if not isinstance(preview, bool):
+        raise ValueError(f"preview 는 True 나 False 여야 합니다: {preview!r}")
     used, rows = read_csv_rows(path, mapping, encoding)
     missing = [f for f in IMPORT_REQUIRED if rows and f not in rows[0][1]]
     if missing:
@@ -213,6 +215,9 @@ def import_csv(store, path, mapping=None, encoding=None, preview=False):
             result["duplicates"].append(line)
             continue
         seen.add(key)
+        if preview:                      # 넣지 않고 들어갈 줄 번호만 적는다(_import_row 가 validate 검사까지 함)
+            result["added"].append(line)
+            continue
         try:
             e = ledger.insert(store, day, payer, amount, members, memo, weights, category, action="import")
         except ValueError as exc:
