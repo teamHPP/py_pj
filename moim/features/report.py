@@ -123,15 +123,16 @@ def period_report(store, start, end):
 
 
 def monthly_report(store, start_month, end_month):
-    """여러 달의 월별 합계 표 글. 지출이 없는 달도 0원으로 한 줄. 명령 `report months` 가 찍는다.
+    """여러 달의 월별 합계 표와 월별 막대그래프 글. 지출이 없는 달도 0원으로 한 줄. 명령 `report months` 가 찍는다.
 
     - 값은 monthly_totals 로만 센다. 잘못된 달·시작 달 > 끝 달은 monthly_totals 의 ValueError
+    - 막대그래프는 표와 같은 달 순서(textfmt.bar_chart, 가장 큰 달이 30칸)
     """
     totals = monthly_totals(store, start_month, end_month)
     months = list(totals)
     rows = [[ym, amount] for ym, amount in totals.items()]
     body = table(["달", "금액"], rows, total=["합계", sum(totals.values())], numeric={1})
-    return f"{months[0]} ~ {months[-1]} 월별 지출\n{body}"
+    return f"{months[0]} ~ {months[-1]} 월별 지출\n{body}\n\n월별 막대그래프\n{bar_chart(totals)}"
 
 
 def _by_amount(totals):
@@ -140,7 +141,10 @@ def _by_amount(totals):
 
 
 def _report_text(title, summary, compare=""):
-    """보고서 본문. compare 는 합계 줄 끝에 붙는 글(전월 대비). 지출이 없으면 표 대신 안내 한 줄."""
+    """보고서 본문. compare 는 합계 줄 끝에 붙는 글(전월 대비). 지출이 없으면 표·그래프 대신 안내 한 줄.
+
+    표 다음에 분류별 막대그래프(분류별 표와 같은 금액 큰 순서, textfmt.bar_chart)를 붙인다.
+    """
     lines = [title, f"합계 {money.fmt(summary['total'])}원 ({summary['count']}건){compare}"]
     if not summary["count"]:
         lines.append("이 기간에 지출이 없습니다")
@@ -149,6 +153,7 @@ def _report_text(title, summary, compare=""):
                                    ("사람별(낸 돈)", "이름", summary["by_person"])):
         lines += ["", heading,
                   table([label, "금액"], _by_amount(totals), total=["합계", summary["total"]], numeric={1})]
+    lines += ["", "분류별 막대그래프", bar_chart(dict(_by_amount(summary["by_category"])))]
     return "\n".join(lines)
 
 
