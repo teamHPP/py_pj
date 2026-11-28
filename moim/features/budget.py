@@ -80,8 +80,54 @@ def over_warn_ratio(spent, limit, ratio):
 
 
 def category_status(store, cfg, month):
-    """분류별 예산 상태. {분류: {"budget", "spent", "remaining", "over", "warn"}}"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """분류별 예산 상태. {분류: {"budget", "spent", "remaining", "over", "warn"}}
+
+    - 대상: 설정 파일 cfg["budget"]["by_category"] 에 예산이 있는 분류(설정에 적힌 순서). 없으면 {}
+    - spent: 그달 1일~말일(규약 3) 그 분류의 지출 합계. category_totals(04) 로만 센다(삭제 제외, "미분류" 묶음 같게)
+      지출이 없는 분류는 category_totals 에 없으므로 0 (규격 04 주의)
+    - remaining = budget - spent, over = spent > budget, warn = spent > budget x 경보 비율(month_status 와 같은 기준)
+    - 잘못된 달·설정은 이유를 담은 ValueError. Store 는 바꾸지 않는다
+    """
+    start, end = dates.month_range(*dates.parse_month(month))
+    budgets = category_budgets(cfg)
+    ratio = warn_ratio(cfg)
+    totals = category_totals(store, start, end)
+    result = {}
+    for name, limit in budgets.items():
+        spent = totals.get(name, {"count": 0, "amount": 0})["amount"]
+        result[name] = {
+            "budget": limit,
+            "spent": spent,
+            "remaining": limit - spent,
+            "over": spent > limit,
+            "warn": over_warn_ratio(spent, limit, ratio),
+        }
+    return result
+
+
+def category_budgets(cfg):
+    """설정 파일의 분류별 예산 cfg["budget"]["by_category"] = {분류: 0 이상의 원 단위 정수}. 없으면 {}.
+
+    분류 이름은 앞뒤 공백을 지워 category_of(03)와 같은 기준으로 맞춘다(" 식비 " → "식비").
+    지운 뒤 이름이 겹치면("식비"와 " 식비") 어느 예산인지 정할 수 없으므로 ValueError.
+    """
+    section = cfg.get("budget") if isinstance(cfg, dict) else None
+    value = section.get("by_category") if isinstance(section, dict) else None
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f'분류별 예산은 {{"분류": 원}} 형식이어야 합니다: {value!r}')
+    budgets = {}
+    for name, limit in value.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"분류 이름이 비어 있습니다: {name!r}")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError(f"분류별 예산은 0 이상의 원 단위 정수여야 합니다: {name}={limit!r}")
+        key = name.strip()
+        if key in budgets:
+            raise ValueError(f"분류별 예산의 분류 이름이 겹칩니다(앞뒤 공백을 지우면 같음): {key!r}")
+        budgets[key] = limit
+    return budgets
 
 
 def forecast(store, month, today):
