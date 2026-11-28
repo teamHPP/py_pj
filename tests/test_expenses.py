@@ -254,6 +254,38 @@ class DeleteExpense(StoreCase):
             expenses.delete_expense(self.store, e["id"])
 
 
+class HistoryQuery(StoreCase):
+    """확장 필수: 수정·삭제 이력 조회. 기록(store.record)은 이미 merge된 상태."""
+
+    def test_returns_all_in_order(self):
+        a, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        b, _ = expenses.add_expense(self.store, "2026-11-13", LEE, 4000, NAMES)
+        expenses.edit_expense(self.store, a["id"], amount=5000)
+        items = expenses.history(self.store)
+        self.assertEqual([(h["action"], h["id"]) for h in items],
+                          [("add", a["id"]), ("add", b["id"]), ("edit", a["id"])])
+
+    def test_filters_by_id(self):
+        a, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        b, _ = expenses.add_expense(self.store, "2026-11-13", LEE, 4000, NAMES)
+        expenses.edit_expense(self.store, a["id"], amount=5000)
+        items = expenses.history(self.store, a["id"])
+        self.assertEqual([h["action"] for h in items], ["add", "edit"])
+        self.assertTrue(all(h["id"] == a["id"] for h in items))
+        self.assertEqual(expenses.history(self.store, b["id"]), [h for h in expenses.history(self.store)
+                                                                   if h["id"] == b["id"]])
+
+    def test_no_history_for_unknown_id(self):
+        expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        self.assertEqual(expenses.history(self.store, 999), [])
+
+    def test_returns_independent_copies(self):
+        e, _ = expenses.add_expense(self.store, "2026-11-12", KIM, 3000, NAMES)
+        items = expenses.history(self.store)
+        items[0]["action"] = "손상"
+        self.assertEqual(self.store.data["history"][0]["action"], "add")
+
+
 class ExpenseCommands(StoreCase):
     """moim exp add/list/edit/delete 명령이 실제로 연결돼 있는지."""
 
@@ -282,6 +314,19 @@ class ExpenseCommands(StoreCase):
         changed, out = self.run_cmd(["exp", "delete", str(eid)])
         self.assertTrue(changed)
         self.assertTrue(self.store.get_expense(eid)["deleted"])
+
+    def test_history(self):
+        changed, out = self.run_cmd(["exp", "add", "2026-11-12", KIM, "9,000", f"{KIM};{LEE}"])
+        self.assertTrue(changed)
+        eid = self.store.data["expenses"][0]["id"]
+        self.run_cmd(["exp", "edit", str(eid), "--amount", "6000"])
+
+        changed, out = self.run_cmd(["exp", "history"])
+        self.assertFalse(changed)
+        self.assertEqual(len(out), 2)
+
+        changed, out = self.run_cmd(["exp", "history", str(eid)])
+        self.assertEqual(len(out), 2)
 
 
 if __name__ == "__main__":
