@@ -69,8 +69,40 @@ def balance_sum(rows):
 
 
 def minimal_transfers(rows):
-    """송금 횟수를 줄인 '누가 누구에게 얼마' 목록. 가장 많이 보낼 사람이 가장 많이 받을 사람에게 보내는 방식."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """송금 횟수를 줄인 '누가 누구에게 얼마' 목록. 가장 많이 보낼 사람이 가장 많이 받을 사람에게 보내는 방식.
+
+    rows: balances 의 결과 {이름: {"balance": 원, ...}}. 돌려주는 값: [(보낼 사람, 받을 사람, 금액)] 보내는 순서대로.
+    매번 남은 보낼 돈이 가장 큰 사람이 남은 받을 돈이 가장 큰 사람에게 둘 중 작은 금액을 보낸다.
+    금액이 같으면 rows 에 먼저 나온 사람이 먼저다. 잔액이 모두 0이면 []. rows 는 바꾸지 않는다.
+    잔액 합이 0이 아니면 송금으로 다 맞출 수 없으므로 ValueError.
+    """
+    if not isinstance(rows, dict):
+        raise ValueError(f"정산 결과는 {{이름: 행}} 형식이어야 합니다: {rows!r}")
+    owe, get = {}, {}
+    for name, r in rows.items():
+        b = r.get("balance") if isinstance(r, dict) else None
+        if isinstance(b, bool) or not isinstance(b, int):
+            raise ValueError(f"{name}의 잔액이 원 단위 정수가 아닙니다: {b!r}")
+        if b < 0:
+            owe[name] = -b
+        elif b > 0:
+            get[name] = b
+    if sum(owe.values()) != sum(get.values()):
+        raise ValueError(f"잔액 합이 0이 아니어서 송금 목록을 만들 수 없습니다: "
+                         f"{sum(get.values()) - sum(owe.values()):,}원")
+    result = []
+    while owe:
+        frm = max(owe, key=owe.get)     # 같으면 먼저 나온 사람
+        to = max(get, key=get.get)
+        amount = min(owe[frm], get[to])
+        result.append((frm, to, amount))
+        owe[frm] -= amount
+        get[to] -= amount
+        if owe[frm] == 0:
+            del owe[frm]
+        if get[to] == 0:
+            del get[to]
+    return result
 
 
 def record_transfer(store, date, frm, to, amount):
