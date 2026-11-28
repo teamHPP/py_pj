@@ -723,11 +723,48 @@ class ImportCsvTest(StoreCase):
         before = copy.deepcopy(self.store.data)
         with self.assertRaises(ValueError):
             self.imp("date,amount\n2026-11-17,1000\n")       # payer 열 없음
-        with self.assertRaises(NotImplementedError):        # 미리 보기는 아직 구현 전
-            self.imp(self.HEAD + "2026-11-17,양정현,1000,,,,\n", preview=True)
+        with self.assertRaises(ValueError):
+            self.imp(self.HEAD + "2026-11-17,양정현,1000,,,,\n", preview="yes")   # preview 는 True·False 만
         with self.assertRaises(OSError):
             transfer_io.import_csv(self.store, self.path("없음.csv"))
         self.assertEqual(self.store.data, before)
+
+    def test_preview_changes_nothing(self):
+        # 선택 "가져오기 미리 보기": 저장 대신 ledger.validate 로 검사만(구현순서 PDF 6장), Store 는 그대로
+        self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n")
+        before = copy.deepcopy(self.store.data)
+        r = self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n"      # 이미 있는 지출과 같음 → 중복
+                                 "2026-11-18,이은경,500,,,,\n"
+                                 "2026-11-18,이은경,500,,,,\n"      # 파일 앞줄과 같음 → 중복
+                                 "2026-13-01,이은경,1,,,,\n"        # 없는 날짜 → 오류
+                                 "2026-11-19,양정현,700,,,,\n", preview=True)
+        self.assertEqual(r, {"encoding": "utf-8-sig", "added": [3, 6], "duplicates": [2, 4],
+                             "errors": [(5, r["errors"][0][1])]})          # added 에는 들어갈 줄 번호
+        self.assertIn("날짜", r["errors"][0][1])
+        self.assertEqual(self.store.data, before)                     # 지출·번호·이력 모두 그대로
+
+    def test_preview_matches_real_import(self):
+        text = (self.HEAD + "2026-11-17,양정현,9000,,,,\n2026-11-17,양정현,9000,,,,\n"
+                "2026-11-18,없는사람,1,,,,\n2026-11-30,신동훈,300,,,,\n2026-12-01,양정현,400,신동훈,,,\n")
+        p = self.imp(text, preview=True)
+        r = self.imp(text)
+        self.assertEqual((p["duplicates"], p["errors"]), (r["duplicates"], r["errors"]))
+        self.assertEqual(p["added"], [2, 5])                         # 실제로 들어간 줄
+        self.assertEqual(r["added"], [1, 2])                         # 실제로 매긴 지출 번호
+
+    def test_preview_command(self):
+        from moim import cli
+        p = self.write("날짜,낸 사람,금액\n2026-11-17,양정현,9000\n2026-11-17,양정현,9000\n2026-11-31,양정현,1\n")
+        argv = ["io", "import", p, "--map", "날짜=date;낸 사람=payer;금액=amount"]
+        out = []
+        self.assertFalse(cli.run(cli.build_parser().parse_args(argv + ["--preview"]), self.cfg, self.store,
+                                 out.append))                        # 미리 보기는 저장하지 않음
+        self.assertEqual(out[:2], ["미리 보기(utf-8-sig): 들어갈 줄 1개 - 2번 줄 (아직 넣지 않았습니다)",
+                                   "중복이라 건너뜀: 3번 줄"])
+        self.assertTrue(out[2].startswith("오류 4번 줄: 날짜가 잘못되었습니다"))
+        self.assertEqual(self.store.data["expenses"], [])
+        for line in out:
+            line.encode("cp949")
 
     def test_import_command(self):
         from moim import cli
