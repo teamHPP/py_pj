@@ -10,6 +10,8 @@
 """
 
 import os
+from decimal import ROUND_HALF_UP, Decimal
+
 from ..common import dates, money
 from ..common.textfmt import bar_chart, pad, table, width  # noqa: F401  (보고서 기능의 표 출력은 공통 함수로 제공)
 from ..common.queries import category_totals, expenses_in, period_total, person_paid
@@ -60,8 +62,22 @@ def period_summary(store, start, end):
 
 
 def month_over_month(store, month):
-    """전월 대비. 돌려주는 값: (이번 달, 지난달, 증감, 증감률 % 또는 None)"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """전월 대비. 돌려주는 값: (이번 달, 지난달, 증감, 증감률 % 또는 None)
+
+    - 이번 달·지난달 합계는 period_total(19) 로 센다(그달 1일~말일, 삭제 제외). 증감 = 이번 달 - 지난달
+    - 증감률 = 증감 / 지난달 × 100 을 소수 첫째 자리까지 사사오입(규약 1장, round() 안 씀)한 float
+    - 지난달 지출이 0원이면 증감률은 None(나눌 수 없으므로 보고서는 안내 문구를 찍는다)
+    - 'YYYY-MM' 이 아닌 달은 ValueError. Store 는 바꾸지 않는다
+    """
+    year, mon = dates.parse_month(month)
+    this = period_total(store, *dates.month_range(year, mon))
+    prev_y, prev_m = dates.prev_month(year, mon)
+    last = period_total(store, *dates.month_range(prev_y, prev_m)) if prev_y >= 1 else 0
+    diff = this - last
+    if last == 0:
+        return this, last, diff, None
+    rate = (Decimal(diff) * 100 / Decimal(last)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return this, last, diff, float(rate)
 
 
 def weekday_totals(store, start, end):
@@ -82,14 +98,17 @@ def biggest_day(store, start, end):
 
 
 def month_report(store, month):
-    """한 달 보고서 글. 제목·합계(건수)·분류별 표·사람별(낸 돈) 표. 명령 `report month` 가 찍는다.
+    """한 달 보고서 글. 제목·합계(건수)와 전월 대비·분류별 표·사람별(낸 돈) 표. 명령 `report month` 가 찍는다.
 
-    - 그달 1일~말일을 period_summary 로 센다(합계를 따로 세지 않음)
+    - 그달 1일~말일을 period_summary 로, 전월 대비는 month_over_month 로 센다(합계를 따로 세지 않음)
     - 'YYYY-MM' 이 아닌 달은 ValueError
     """
     year, mon = dates.parse_month(month)
     start, end = dates.month_range(year, mon)
-    return _report_text(f"{year:04d}-{mon:02d} 지출 보고서", period_summary(store, start, end))
+    _, last, diff, rate = month_over_month(store, month)
+    rate_text = "비교할 지난달 지출 없음" if rate is None else f"{rate:+.1f}%"
+    compare = f", 지난달 {money.fmt(last)}원, 증감 {diff:+,}원 ({rate_text})"
+    return _report_text(f"{year:04d}-{mon:02d} 지출 보고서", period_summary(store, start, end), compare)
 
 
 def period_report(store, start, end):
@@ -120,9 +139,9 @@ def _by_amount(totals):
     return [[name, amount] for name, amount in sorted(totals.items(), key=lambda item: -item[1])]
 
 
-def _report_text(title, summary):
-    """보고서 본문. 지출이 없으면 표 대신 안내 한 줄."""
-    lines = [title, f"합계 {money.fmt(summary['total'])}원 ({summary['count']}건)"]
+def _report_text(title, summary, compare=""):
+    """보고서 본문. compare 는 합계 줄 끝에 붙는 글(전월 대비). 지출이 없으면 표 대신 안내 한 줄."""
+    lines = [title, f"합계 {money.fmt(summary['total'])}원 ({summary['count']}건){compare}"]
     if not summary["count"]:
         lines.append("이 기간에 지출이 없습니다")
         return "\n".join(lines)

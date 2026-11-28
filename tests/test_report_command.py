@@ -15,7 +15,7 @@ KIM, LEE = "김민수", "이서연"
 
 MONTH_2026_11 = (
     "2026-11 지출 보고서\n"
-    "합계 18,000원 (3건)\n"
+    "합계 18,000원 (3건), 지난달 1,000원, 증감 +17,000원 (+1700.0%)\n"
     "\n"
     "분류별\n"
     "분류      금액\n"
@@ -66,8 +66,10 @@ class ReportTextTest(ReportCase):
         self.assertNotIn("미분류", got)   # 11-20 지출은 기간 밖
 
     def test_period_report_same_body_as_month(self):
-        got = report.period_report(self.store, "2026-11-01", "2026-11-30")
-        self.assertEqual(got.split("\n")[1:], MONTH_2026_11.split("\n")[1:])
+        # 기간 보고서에는 전월 대비가 없고, 표는 월 보고서와 같다
+        got = report.period_report(self.store, "2026-11-01", "2026-11-30").split("\n")
+        self.assertEqual(got[1], "합계 18,000원 (3건)")
+        self.assertEqual(got[2:], MONTH_2026_11.split("\n")[2:])
 
     def test_same_amount_keeps_first_order(self):
         self.store.data["expenses"] = [expense(1, "2026-11-12", LEE, 5000), expense(2, "2026-11-13", KIM, 5000)]
@@ -76,7 +78,9 @@ class ReportTextTest(ReportCase):
 
     def test_empty(self):
         self.assertEqual(report.month_report(self.store, "2026-12"),
-                         "2026-12 지출 보고서\n합계 0원 (0건)\n이 기간에 지출이 없습니다")
+                         "2026-12 지출 보고서\n"
+                         "합계 0원 (0건), 지난달 18,000원, 증감 -18,000원 (-100.0%)\n"
+                         "이 기간에 지출이 없습니다")
 
     def test_monthly_report(self):
         self.assertEqual(report.monthly_report(self.store, "2026-09", "2026-11"),
