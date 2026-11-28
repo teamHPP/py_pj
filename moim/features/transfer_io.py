@@ -17,6 +17,7 @@ import os
 from ..common import cliutil, dates, ledger, money
 from ..common.csvio import detect_encoding, read_csv_rows  # noqa: F401
 from ..common.queries import active_members, category_of, expenses_in, period_total
+from ..common.store import Store
 
 # CSV 열 순서. 열 이름은 지출 필드 이름 그대로 써서 다시 읽을 때(read_csv_rows) 연결 없이 읽히게 한다.
 CSV_FIELDS = ["id", "date", "payer", "amount", "members", "weights", "category", "memo"]
@@ -229,6 +230,67 @@ def restore_all(store, path):
     raise NotImplementedError("이 함수를 구현한다")
 
 
+def _merge_member(m):
+    """다른 모임 명부의 회원 한 명 → {"name", "joined", "left"}. 잘못되면 ValueError."""
+    if not isinstance(m, dict) or not isinstance(m.get("name"), str) or not m["name"].strip():
+        raise ValueError(f"회원 자료가 잘못되었습니다: {m!r}")
+    joined = dates.fmt(m.get("joined"))
+    left = dates.fmt(m["left"]) if m.get("left") is not None else None
+    if left is not None and left < joined:
+        raise ValueError(f"탈퇴일이 가입일보다 빠릅니다: {m['name']} {left} < {joined}")
+    return {"name": m["name"].strip(), "joined": joined, "left": left}
+
+
+def merge_detail(store, other_path):
+    """다른 모임 자료를 합치고 결과를 자세히 돌려준다. merge 가 이 함수를 쓴다(io merge 명령이 결과를 보여 준다).
+
+    돌려주는 값: {"added": [새 지출 번호], "members": [새로 더한 이름], "duplicates": [다른 모임 지출 번호],
+                 "errors": [(다른 모임 지출 번호 또는 회원 이름, 이유)]}
+    - other_path 는 자료 파일(data.json)과 같은 형식. 없으면 OSError, 자료 파일 형식이 아니면 ValueError(아무것도 안 바꿈)
+    - 회원: 이 모임 명부에 없는 이름만 더한다(이미 있는 사람의 가입일·탈퇴일은 바꾸지 않는다). 잘못된 회원은 errors
+    - 지출: 삭제 표시된 지출은 빼고, 날짜·번호 순으로 ledger.validate 검사 뒤 ledger.insert(action="merge")
+      같은 날·같은 낸 사람·같은 금액의 지출이 이미 있거나(ledger.duplicates) 앞에서 합친 것과 같으면 duplicates
+    - 잘못된 지출(명부·회원 기간·잠긴 기간·금액 등)은 건너뛰고 errors 에 이유를 담는다. 나머지는 합친다
+      (기능 1 여러 줄 입력·기능 5 은행 거래내역 가져오기와 같은 방식)
+    """
+    if not os.path.isfile(other_path):
+        raise FileNotFoundError(f"합칠 자료 파일이 없습니다: {other_path}")
+    try:
+        other = Store(other_path).load().data
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"자료 파일 형식이 아닙니다(JSON 오류): {exc}") from None
+    result = {"added": [], "members": [], "duplicates": [], "errors": []}
+    for m in other["members"]:
+        try:
+            m = _merge_member(m)
+        except ValueError as exc:
+            name = m.get("name") if isinstance(m, dict) else m
+            result["errors"].append((f"회원 {name!r}", str(exc)))
+            continue
+        if store.member(m["name"]) is None:
+            store.data["members"].append(m)
+            result["members"].append(m["name"])
+    items = [e for e in other["expenses"] if isinstance(e, dict) and not e.get("deleted", False)]
+    items.sort(key=lambda e: (str(e.get("date")), str(e.get("id"))))
+    for e in items:
+        try:
+            day, amount = ledger.validate(store, e.get("date"), e.get("payer"), e.get("amount"),
+                                          e.get("members"), e.get("weights"))
+            if ledger.duplicates(store, day, e["payer"], amount):
+                result["duplicates"].append(e.get("id"))
+                continue
+            new = ledger.insert(store, day, e["payer"], amount, e["members"], e.get("memo") or "",
+                                e.get("weights"), e.get("category"), action="merge")
+        except (ValueError, KeyError, TypeError) as exc:
+            result["errors"].append((e.get("id"), str(exc)))
+            continue
+        result["added"].append(new["id"])
+    return result
+
+
 def merge(store, other_path):
-    """다른 모임 자료(백업 파일)의 회원·지출을 합친다. 지출 번호는 새로 매긴다. 돌려주는 값: 합친 지출 수"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """다른 모임 자료(백업 파일)의 회원·지출을 합친다. 지출 번호는 새로 매긴다. 돌려주는 값: 합친 지출 수
+
+    - 규칙과 건너뛰는 경우는 merge_detail 과 같다(중복·삭제된 지출·잘못된 지출은 합치지 않는다)
+    """
+    return len(merge_detail(store, other_path)["added"])

@@ -34,6 +34,8 @@ def add_parser(sub, period_args):
     s.add_argument("path", help="CSV 파일 경로")
     s.add_argument("--map", default="", help="열 이름 연결 '파일 열=필드;…' 예: '날짜=date;금액=amount'")
     s.add_argument("--encoding", choices=["utf-8", "utf-8-sig", "cp949"], help="인코딩(안 주면 자동 판별)")
+    s = grp.add_parser("merge", help="다른 모임 자료 파일(data.json 형식)의 회원·지출 합치기")
+    s.add_argument("path", help="다른 모임의 자료 파일 경로")
     return grp
 
 
@@ -53,6 +55,15 @@ def _lines(nums):
 
 
 def run(c, args, cfg, store, out):
+    if c == "merge":
+        r = transfer_io.merge_detail(store, args.path)
+        out(f"합쳤습니다: 지출 {len(r['added'])}건" + (f", 새 회원 {len(r['members'])}명" if r["members"] else ""))
+        if r["duplicates"]:
+            out(f"중복이라 건너뜀: 다른 모임의 {_lines(r['duplicates'])}번 지출")
+        for where, why in r["errors"]:
+            label = where if isinstance(where, str) else f"다른 모임의 {where}번 지출"
+            out(f"오류({label}): {why}")
+        return bool(r["added"] or r["members"])
     if c == "import":
         r = transfer_io.import_csv(store, args.path, _mapping(args.map), args.encoding)
         out(f"가져왔습니다({r['encoding']}): {len(r['added'])}건" +
