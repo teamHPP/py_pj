@@ -304,6 +304,12 @@ class AddFromFile(StoreCase):
         self.assertEqual(self.store.get_expense(added[0])["memo"], "회의 후 저녁")
         self.assertEqual(self.store.get_expense(added[1])["memo"], "")
 
+    def test_history_action_is_file_import(self):
+        # 함수 규격 A2: add_from_file은 이력에 "file_import"로 남아야 한다
+        path = self.write(f"2026-11-12,{KIM},9000,{KIM}\n")
+        expenses.add_from_file(self.store, path)
+        self.assertEqual([h["action"] for h in self.store.data["history"]], ["file_import"])
+
     def test_skips_comment_and_blank_lines(self):
         path = self.write(f"# 주석\n\n2026-11-12,{KIM},9000,{KIM}\n")
         added, errors = expenses.add_from_file(self.store, path)
@@ -340,6 +346,24 @@ class AddFromFile(StoreCase):
     def test_missing_file_raises_oserror(self):
         with self.assertRaises(OSError):
             expenses.add_from_file(self.store, self.path("없음.csv"))
+
+    def test_cp949_file_is_detected(self):
+        path = self.path("bulk_cp949.csv")
+        with open(path, "w", encoding="cp949", newline="") as f:
+            f.write(f"2026-11-12,{KIM},9000,{KIM},메모\n")
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.store.get_expense(added[0])["memo"], "메모")
+
+    def test_quoted_newline_keeps_real_line_number(self):
+        # 따옴표 안 줄바꿈이 있는 줄은 2개의 실제 줄을 차지하므로, 그다음 줄의 줄 번호가 밀리면 안 된다
+        path = self.path("bulk.csv")
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(f'2026-11-12,{KIM},9000,{KIM},"메모\n줄바꿈"\n2026-13-01,{KIM},1000,{KIM}\n')
+        added, errors = expenses.add_from_file(self.store, path)
+        self.assertEqual(len(added), 1)
+        self.assertEqual(self.store.get_expense(added[0])["memo"], "메모\n줄바꿈")
+        self.assertEqual(errors[0][0], 3)  # 첫 줄이 2개 줄을 차지했으므로 오류 줄은 3번째 실제 줄
 
 
 class ExpenseCommands(StoreCase):
@@ -384,11 +408,11 @@ class ExpenseCommands(StoreCase):
         changed, out = self.run_cmd(["exp", "history", str(eid)])
         self.assertEqual(len(out), 2)
 
-    def test_add_file(self):
+    def test_import_lines(self):
         path = self.path("bulk.csv")
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(f"2026-11-12,{KIM},9000,{KIM}\n2026-13-01,{KIM},1000,{KIM}\n")
-        changed, out = self.run_cmd(["exp", "add-file", path])
+        changed, out = self.run_cmd(["exp", "import-lines", path])
         self.assertTrue(changed)
         self.assertIn("추가했습니다: 1건", out[0])
         self.assertTrue(out[1].startswith("오류 2번 줄: "))

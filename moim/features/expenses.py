@@ -15,6 +15,7 @@
 import copy
 import csv
 from ..common import cliutil, dates, ledger, money
+from ..common.csvio import detect_encoding
 from ..common.queries import is_locked
 
 _EDITABLE_FIELDS = ("date", "payer", "amount", "members", "memo", "weights", "category")
@@ -162,10 +163,18 @@ def add_from_file(store, path):
     '#' 로 시작하는 줄과 빈 줄은 건너뛴다. 돌려주는 값: (추가한 번호 목록, [(줄 번호, 오류)])
 
     메모에 쉼표가 있으면 CSV처럼 큰따옴표로 감싼다("메모, 쉼표 포함"). 오류 줄은 건너뛰고 나머지는 넣는다.
+    규격 A2에 따라 이력에는 action="file_import"로 남는다. 인코딩은 csvio.detect_encoding으로 판별한다.
     """
     added, errors = [], []
-    with open(path, encoding="utf-8-sig", newline="") as f:
-        for lineno, row in enumerate(csv.reader(f), 1):
+    encoding = detect_encoding(path)
+    with open(path, encoding=encoding, newline="") as f:
+        reader = csv.reader(f)
+        while True:
+            lineno = reader.line_num + 1   # 그 행이 시작하는 실제 줄 번호(read_csv_rows와 같은 방식)
+            try:
+                row = next(reader)
+            except StopIteration:
+                break
             if not any(field.strip() for field in row):
                 continue
             if row[0].strip().startswith("#"):
@@ -179,7 +188,7 @@ def add_from_file(store, path):
             memo = parts[4] if len(parts) == 5 else ""
             try:
                 members = cliutil._members(members_text)
-                e, _ = add_expense(store, date, payer, amount, members, memo=memo)
+                e = ledger.insert(store, date, payer, amount, members, memo=memo, action="file_import")
             except ValueError as exc:
                 errors.append((lineno, str(exc)))
                 continue

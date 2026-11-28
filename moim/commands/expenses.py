@@ -43,7 +43,7 @@ def add_parser(sub, period_args):
     s = grp.add_parser("history", help="수정·삭제 이력")
     s.add_argument("id", type=int, nargs="?", help="주면 그 지출의 이력만")
 
-    s = grp.add_parser("add-file", help="여러 줄 한꺼번에 입력(파일에서 읽기)")
+    s = grp.add_parser("import-lines", help="여러 줄 한꺼번에 입력(파일에서 읽기)")
     s.add_argument("path")
 
     return grp
@@ -96,7 +96,7 @@ def run(c, args, cfg, store, out):
             out(f"{h['at']} {h['action']} {h['id']}번")
         return False
 
-    if c == "add-file":
+    if c == "import-lines":
         added, errors = expenses.add_from_file(store, args.path)
         out(f"추가했습니다: {len(added)}건" +
             (f" - 지출 번호 {', '.join(str(n) for n in added)}" if added else ""))
