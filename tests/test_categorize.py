@@ -475,6 +475,36 @@ class SummaryTest(StoreCase):
             cli.run(cli.build_parser().parse_args(["cat", "summary"]), self.cfg, self.store, out.append)
 
 
+class OverlapsTest(unittest.TestCase):
+    """선택: 규칙 겹침 검사(같은 키워드가 서로 다른 분류의 규칙에 함께 있는 경우)."""
+
+    def test_overlaps(self):
+        rules = []
+        categorize.add_rule(rules, "식비", ["저녁", "회식"])        # 0
+        categorize.add_rule(rules, "행사", ["회식", "현수막"])      # 1
+        categorize.add_rule(rules, "식비", ["저녁", "점심"])        # 2  같은 분류(0)와는 겹침 아님
+        categorize.add_rule(rules, "음료", ["저녁", "회식"])        # 3
+        categorize.add_rule(rules, "물품", payer="양정현")          # 4  키워드 없음
+        self.assertEqual(categorize.overlaps(rules),
+                         [(0, 1, "회식"), (0, 3, "저녁"), (0, 3, "회식"), (1, 3, "회식"), (2, 3, "저녁")])
+
+    def test_no_overlap_and_unchanged(self):
+        rules = []
+        categorize.add_rule(rules, "식비", ["저녁"])
+        categorize.add_rule(rules, "교통", ["택시"])
+        categorize.add_rule(rules, "식비", ["저녁"])
+        before = copy.deepcopy(rules)
+        self.assertEqual(categorize.overlaps(rules), [])
+        self.assertEqual(categorize.overlaps([]), [])
+        self.assertEqual(rules, before)
+
+    def test_bad_rules(self):
+        for bad in (None, [{"category": "식비"}], [{"category": "식비", "keywords": "저녁"}]):
+            with self.subTest(rules=bad):
+                with self.assertRaises(ValueError):
+                    categorize.overlaps(bad)
+
+
 class RuleCommandsTest(StoreCase):
     """기본 필수: 규칙 추가·삭제·목록 명령 (moim cat add/remove/list)."""
 
@@ -530,6 +560,12 @@ class RuleCommandsTest(StoreCase):
         self.assertEqual(self.store.data["expenses"][0]["category"], "식비")
         with self.assertRaises(ValueError):
             self.run_cmd(["cat", "set", "9", "식비"])     # 없는 번호
+
+    def test_check(self):
+        self.assertEqual(self.run_cmd(["cat", "check"]), (False, ["겹치는 규칙이 없습니다"]))
+        self.run_cmd(["cat", "add", "식비", "--keywords", "저녁;회식"])
+        self.run_cmd(["cat", "add", "행사", "--keywords", "회식"])
+        self.assertEqual(self.run_cmd(["cat", "check"]), (False, ["키워드 '회식': 1번 식비 / 2번 행사"]))
 
     def test_errors(self):
         with self.assertRaises(ValueError):

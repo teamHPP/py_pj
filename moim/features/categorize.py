@@ -245,8 +245,20 @@ def uncategorized(store):
 
 
 def overlaps(rules):
-    """같은 키워드가 서로 다른 분류의 규칙에 함께 있는 경우. [(규칙 번호 i, 규칙 번호 j, 겹친 키워드)]"""
-    raise NotImplementedError("이 함수를 구현한다")
+    """같은 키워드가 서로 다른 분류의 규칙에 함께 있는 경우. [(규칙 번호 i, 규칙 번호 j, 겹친 키워드)]
+    번호는 remove_rule 과 같이 0부터 센 목록 위치이고 i < j. (i, j) 순서, 키워드는 규칙 i 에 적힌 순서."""
+    _check_rules(rules)
+    found = []
+    for i, first in enumerate(rules):
+        for j in range(i + 1, len(rules)):
+            second = rules[j]
+            if first["category"].strip() == second["category"].strip():
+                continue   # 같은 분류끼리는 겹쳐도 분류 결과가 같다
+            others = {w.strip() for w in second.get("keywords", [])}
+            for word in first.get("keywords", []):
+                if word.strip() in others:
+                    found.append((i, j, word.strip()))
+    return found
 
 
 def summary(store, start, end):
