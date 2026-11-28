@@ -13,7 +13,7 @@ from moim.common.money import check_weights, split
 from moim.common.ledger import insert
 from moim.common.queries import expense_shares, expenses_in, is_locked, member_shares
 from moim.common.store import EMPTY, Store
-from moim.features.settle import balance_sum, balances, lock_period
+from moim.features.settle import balance_sum, balances, lock_period, minimal_transfers
 
 KIM, LEE, PARK = NAMES
 
@@ -577,6 +577,19 @@ class SettleCommandTest(StoreCase):
         self.assertIn("잔액 합이 0이 아닙니다: 5원", text)
         text.encode("cp949")
 
+    def test_transfers_command(self):
+        self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
+                                            "members": list(NAMES), "deleted": False})
+        changed, text = self.run_cmd(["settle", "transfers", "--month", "2026-11"])
+        self.assertFalse(changed)   # 조회만 하므로 저장하지 않음
+        self.assertEqual(text, f"{LEE} -> {KIM} 3,000원\n{PARK} -> {KIM} 3,000원")
+        text.encode("cp949")
+
+    def test_transfers_command_nothing_to_send(self):
+        changed, text = self.run_cmd(["settle", "transfers", "--start", "2026-12-01", "--end", "2026-12-31"])
+        self.assertFalse(changed)
+        self.assertIn("보낼 송금이 없습니다", text)
+
     def test_lock_command_saves_period(self):
         self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
                                             "members": list(NAMES), "deleted": False})
@@ -655,6 +668,64 @@ class LockPeriodTest(StoreCase):
         with self.assertRaises(ValueError):
             lock_period(self.store, "2026-11-01", "2026-11-31")
         self.assertEqual(self.store.data["locks"], [])
+
+
+class MinimalTransfersTest(StoreCase):
+    """minimal_transfers: 가장 많이 보낼 사람 -> 가장 많이 받을 사람 순서의 송금 목록."""
+
+    @staticmethod
+    def rows(**balances):
+        return {n: {"balance": b} for n, b in balances.items()}
+
+    def test_skeleton_demo_example(self):
+        # 스켈레톤 구조와 구현순서 8장 화면의 잔액과 송금 목록
+        rows = {"김민수": {"balance": -11975}, "이서연": {"balance": -5563}, "박지훈": {"balance": -44236},
+                "최유진": {"balance": -112526}, "정하늘": {"balance": 131552}, "한도윤": {"balance": 42748}}
+        self.assertEqual(minimal_transfers(rows), [
+            ("최유진", "정하늘", 112526), ("박지훈", "한도윤", 42748), ("김민수", "정하늘", 11975),
+            ("이서연", "정하늘", 5563), ("박지훈", "정하늘", 1488)])
+
+    def test_even_split_from_balances(self):
+        self.store.data["expenses"].append({"id": 1, "date": "2026-11-12", "payer": KIM, "amount": 9000,
+                                            "members": list(NAMES), "deleted": False})
+        rows = balances(self.store, "2026-11-01", "2026-11-30")
+        self.assertEqual(minimal_transfers(rows), [(LEE, KIM, 3000), (PARK, KIM, 3000)])  # 같으면 먼저 나온 사람
+
+    def test_transfers_settle_everyone(self):
+        # 목록대로 보내면(transfers 에 기록) 모두 잔액 0, 송금 횟수는 사람 수 - 1 이하
+        spent = [(KIM, 10001, None), (LEE, 7000, {KIM: 2}), (KIM, 2500, None)]
+        for i, (payer, amount, weights) in enumerate(spent, 1):
+            self.store.data["expenses"].append({"id": i, "date": f"2026-11-1{i}", "payer": payer, "amount": amount,
+                                                "members": list(NAMES), "weights": weights, "deleted": False})
+        moves = minimal_transfers(balances(self.store, "2026-11-01", "2026-11-30"))
+        self.assertLessEqual(len(moves), len(NAMES) - 1)
+        for frm, to, amount in moves:
+            self.store.data["transfers"].append({"date": "2026-11-30", "from": frm, "to": to, "amount": amount})
+        after = balances(self.store, "2026-11-01", "2026-11-30")
+        self.assertEqual({n: r["balance"] for n, r in after.items()}, {n: 0 for n in after})
+        self.assertEqual(minimal_transfers(after), [])
+
+    def test_all_zero_or_empty(self):
+        self.assertEqual(minimal_transfers({}), [])
+        self.assertEqual(minimal_transfers(self.rows(A=0, B=0)), [])
+
+    def test_one_debtor_many_creditors(self):
+        self.assertEqual(minimal_transfers(self.rows(A=-10, B=3, C=7)), [("A", "C", 7), ("A", "B", 3)])
+
+    def test_does_not_change_rows(self):
+        rows = self.rows(A=-5, B=5)
+        before = copy.deepcopy(rows)
+        minimal_transfers(rows)
+        self.assertEqual(rows, before)
+
+    def test_nonzero_sum_raises(self):
+        with self.assertRaises(ValueError):
+            minimal_transfers(self.rows(A=-5, B=4))
+
+    def test_bad_rows_raise(self):
+        for bad in (None, [], {"A": 5}, {"A": {}}, {"A": {"balance": 1.5}}, {"A": {"balance": True}}):
+            with self.subTest(rows=bad), self.assertRaises(ValueError):
+                minimal_transfers(bad)
 
 if __name__ == "__main__":
     unittest.main()
