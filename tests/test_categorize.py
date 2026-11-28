@@ -422,6 +422,59 @@ class SetCategoryTest(StoreCase):
         self.assertEqual(self.store.data, before)
 
 
+class SummaryTest(StoreCase):
+    """확장 필수: 분류별 건수·금액 집계(category_totals 로 제공)."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.data["expenses"].extend([
+            expense(id=1, date="2026-11-03", amount=12000, category="교통"),
+            expense(id=2, date="2026-11-17", amount=9000, category="식비"),
+            expense(id=3, date="2026-11-20", amount=3000, category=None),
+            expense(id=4, date="2026-11-25", amount=8000, category="교통"),
+            expense(id=5, date="2026-11-26", amount=5000, category="식비", deleted=True),
+            expense(id=6, date="2026-12-01", amount=7000, category="식비"),
+        ])
+
+    def test_same_as_category_totals(self):
+        for start, end in (("2026-11-01", "2026-11-30"), (None, None), ("2026-12-01", "2026-12-31"),
+                           ("2027-01-01", "2027-01-31")):
+            with self.subTest(start=start, end=end):
+                self.assertEqual(categorize.summary(self.store, start, end),
+                                 category_totals(self.store, start, end))
+        self.assertEqual(categorize.summary(self.store, "2026-11-01", "2026-11-30"),
+                         {"교통": {"count": 2, "amount": 20000}, "식비": {"count": 1, "amount": 9000},
+                          "미분류": {"count": 1, "amount": 3000}})
+
+    def test_new_dict_and_errors(self):
+        before = copy.deepcopy(self.store.data)
+        first = categorize.summary(self.store, None, None)
+        first["교통"]["amount"] = 0
+        self.assertEqual(categorize.summary(self.store, None, None)["교통"]["amount"], 20000)
+        self.assertEqual(self.store.data, before)
+        with self.assertRaises(ValueError):
+            categorize.summary(self.store, "2026-11-30", "2026-11-01")
+
+    def test_command(self):
+        from moim import cli
+        out = []
+        changed = cli.run(cli.build_parser().parse_args(["cat", "summary", "--month", "2026-11"]),
+                          self.cfg, self.store, out.append)
+        self.assertFalse(changed)
+        self.assertEqual(out[0], "분류별 집계: 2026-11-01 ~ 2026-11-30")
+        lines = out[1].split("\n")
+        self.assertEqual(lines[0].split(), ["분류", "건수", "금액"])
+        self.assertEqual([line.split() for line in lines[2:5]],
+                         [["교통", "2", "20,000"], ["식비", "1", "9,000"], ["미분류", "1", "3,000"]])
+        self.assertEqual(lines[-1].split(), ["합계", "4", "32,000"])
+        out.clear()
+        cli.run(cli.build_parser().parse_args(["cat", "summary", "--month", "2027-01"]),
+                self.cfg, self.store, out.append)
+        self.assertEqual(out, ["2027-01-01 ~ 2027-01-31 기간에 지출이 없습니다"])
+        with self.assertRaises(ValueError):
+            cli.run(cli.build_parser().parse_args(["cat", "summary"]), self.cfg, self.store, out.append)
+
+
 class RuleCommandsTest(StoreCase):
     """기본 필수: 규칙 추가·삭제·목록 명령 (moim cat add/remove/list)."""
 
