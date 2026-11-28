@@ -40,6 +40,8 @@ def add_parser(sub, period_args):
     s.add_argument("id", type=int, help="지출 번호")
 
     period_args(grp.add_parser("summary", help="분류별 건수·금액"))
+
+    grp.add_parser("check", help="규칙 겹침 검사(같은 키워드가 다른 분류에 있는 규칙)")
     return grp
 
 
@@ -128,6 +130,15 @@ def run(c, args, cfg, store, out):
         total = ["합계", sum(v["count"] for v in totals.values()), sum(v["amount"] for v in totals.values())]
         out(f"분류별 집계: {start} ~ {end}")
         out(textfmt.table(["분류", "건수", "금액"], rows, total=total, numeric={1, 2}))
+        return False
+
+    if c == "check":
+        rules = categorize.load_rules(path)
+        found = categorize.overlaps(rules)
+        if not found:
+            out("겹치는 규칙이 없습니다")
+        for i, j, word in found:   # 화면 번호는 cat list 와 같이 1부터
+            out(f"키워드 '{word}': {i + 1}번 {rules[i]['category']} / {j + 1}번 {rules[j]['category']}")
         return False
 
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
