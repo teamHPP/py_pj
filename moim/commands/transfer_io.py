@@ -57,6 +57,8 @@ def run(c, args, cfg, store, out):
         r = transfer_io.import_csv(store, args.path, _mapping(args.map), args.encoding)
         out(f"가져왔습니다({r['encoding']}): {len(r['added'])}건" +
             (f" - 지출 번호 {_lines(r['added'])}" if r["added"] else ""))
+        if r["duplicates"]:
+            out(f"중복이라 건너뜀: {_lines(r['duplicates'])}번 줄")
         for line, why in r["errors"]:
             out(f"오류 {line}번 줄: {why}")
         return bool(r["added"])

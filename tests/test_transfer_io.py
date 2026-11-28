@@ -688,6 +688,36 @@ class ImportCsvTest(StoreCase):
         self.assertIn("비율", r["errors"][4][1])
         self.assertIn("신동훈", r["errors"][5][1])      # 탈퇴 다음 날은 참여자 불가
 
+    def test_duplicates_existing_and_in_file(self):
+        # 중복 기준은 ledger.duplicates(규격 18): 같은 날·같은 낸 사람·같은 금액
+        self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n")
+        r = self.imp(self.HEAD + "2026-11-17,양정현,\"9,000\",,,,메모가 달라도 중복\n"   # 이미 있는 지출과 같음
+                                 "2026-11-18,이은경,500,,,,\n"
+                                 "2026-11-18,이은경,500,,,,\n"                       # 파일 앞줄과 같음
+                                 "2026-11-18,양정현,500,,,,\n"                       # 낸 사람이 다르면 중복 아님
+                                 "2026-11-18,이은경,501,,,,\n")                      # 금액이 다르면 중복 아님
+        self.assertEqual(r, {"encoding": "utf-8-sig", "added": [2, 3, 4], "duplicates": [2, 4], "errors": []})
+        self.assertEqual(len(self.store.data["expenses"]), 4)
+
+    def test_same_file_twice_adds_nothing(self):
+        text = self.HEAD + "2026-11-17,양정현,9000,,,,\n2026-11-18,이은경,500,,,,\n"
+        self.assertEqual(self.imp(text)["added"], [1, 2])
+        before = copy.deepcopy(self.store.data)
+        r = self.imp(text)
+        self.assertEqual((r["added"], r["duplicates"]), ([], [2, 3]))
+        self.assertEqual(self.store.data, before)          # 지출·번호·이력 모두 그대로
+
+    def test_deleted_expense_is_not_duplicate(self):
+        self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n")
+        self.store.data["expenses"][0]["deleted"] = True
+        r = self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n")
+        self.assertEqual((r["added"], r["duplicates"]), ([2], []))
+
+    def test_error_reported_before_duplicate(self):
+        self.imp(self.HEAD + "2026-11-17,양정현,9000,,,,\n")
+        r = self.imp(self.HEAD + "2026-11-17,양정현,9000,없는사람,,,\n")   # 중복이지만 참여자가 잘못됨
+        self.assertEqual((r["duplicates"], [n for n, _ in r["errors"]]), ([], [2]))
+
     def test_bad_input(self):
         self.assertEqual(self.imp(""), {"encoding": "utf-8-sig", "added": [], "duplicates": [], "errors": []})
         before = copy.deepcopy(self.store.data)
@@ -713,6 +743,20 @@ class ImportCsvTest(StoreCase):
         with self.assertRaises(ValueError):
             cli.run(cli.build_parser().parse_args(["io", "import", p, "--map", "날짜"]), self.cfg, self.store,
                     out.append)
+
+    def test_import_command_reports_duplicates(self):
+        from moim import cli
+        p = self.write("날짜,낸 사람,금액\n2026-11-17,양정현,9000\n2026-11-17,양정현,9000\n2026-11-31,양정현,1\n")
+        out = []
+        args = cli.build_parser().parse_args(["io", "import", p, "--map", "날짜=date;낸 사람=payer;금액=amount"])
+        self.assertTrue(cli.run(args, self.cfg, self.store, out.append))
+        self.assertEqual(out[:2], ["가져왔습니다(utf-8-sig): 1건 - 지출 번호 1", "중복이라 건너뜀: 3번 줄"])
+        self.assertTrue(out[2].startswith("오류 4번 줄: "))
+        out.clear()
+        self.assertFalse(cli.run(args, self.cfg, self.store, out.append))   # 다시 가져오면 모두 중복 → 저장 안 함
+        self.assertEqual(out[:2], ["가져왔습니다(utf-8-sig): 0건", "중복이라 건너뜀: 2, 3번 줄"])
+        for line in out:
+            line.encode("cp949")                                            # 기본 Windows 콘솔에서도 출력됨
 
     def test_io_outputs_fit_cp949_console(self):
         # 기본 Windows 콘솔(cp949)에서 출력하다 UnicodeEncodeError 로 멈추면 가져온 지출이 저장되지 않는다
