@@ -40,6 +40,9 @@ def add_parser(sub, period_args):
     s = grp.add_parser("delete", help="지출 삭제")
     s.add_argument("id", type=int)
 
+    s = grp.add_parser("history", help="수정·삭제 이력")
+    s.add_argument("id", type=int, nargs="?", help="주면 그 지출의 이력만")
+
     return grp
 
 
@@ -81,6 +84,14 @@ def run(c, args, cfg, store, out):
         e = expenses.delete_expense(store, args.id)
         out(f"삭제했습니다: {e['id']}번")
         return True
+
+    if c == "history":
+        items = expenses.history(store, args.id)
+        if not items:
+            out("이력이 없습니다")
+        for h in items:
+            out(f"{h['at']} {h['action']} {h['id']}번")
+        return False
 
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False
