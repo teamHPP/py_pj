@@ -104,7 +104,8 @@ def _csv_amounts(path):
     return amounts
 
 
-def _json_amounts(path):
+def _load_json_items(path):
+    """export_json 이 쓴 파일 → 지출 dict 목록. 모양이 틀리면 ValueError."""
     with open(path, encoding="utf-8-sig") as f:
         try:
             items = json.load(f)
@@ -112,12 +113,14 @@ def _json_amounts(path):
             raise ValueError(f"JSON 형식이 잘못되었습니다: {exc}") from None
     if not isinstance(items, list):
         raise ValueError("JSON 파일은 지출 목록([...])이어야 합니다")
-    amounts = []
     for i, e in enumerate(items, 1):
         if not isinstance(e, dict):
             raise ValueError(f"{i}번째 지출: 지출은 객체({{...}})여야 합니다")
-        amounts.append(_amount(e.get("amount"), f"{i}번째 지출"))
-    return amounts
+    return items
+
+
+def _json_amounts(path):
+    return [_amount(e.get("amount"), f"{i}번째 지출") for i, e in enumerate(_load_json_items(path), 1)]
 
 
 def file_total(path):
@@ -155,9 +158,54 @@ def export_count(store, start=None, end=None, category=None):
     return len(_selected(store, start, end, category))
 
 
+def _file_id(value, where):
+    try:
+        eid = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{where}: 지출 번호(id)가 잘못되었습니다: {value!r}") from None
+    if eid < 1:
+        raise ValueError(f"{where}: 지출 번호(id)가 잘못되었습니다: {value!r}")
+    return eid
+
+
+def _file_records(path):
+    """내보낸 파일 → [(번호, 비교할 값)]. CSV 는 CSV_FIELDS 열의 글자, JSON 은 지출 dict 그대로."""
+    if os.fspath(path).lower().endswith(".json"):
+        return [(_file_id(e.get("id"), f"{i}번째 지출"), e) for i, e in enumerate(_load_json_items(path), 1)]
+    _, rows = read_csv_rows(path)
+    if rows and "id" not in rows[0][1]:
+        raise ValueError(f"CSV에 id 열이 없습니다(export_csv 로 내보낸 파일이어야 합니다): {path}")
+    records = []
+    for line, row in rows:
+        if None in row or None in row.values():
+            raise ValueError(f"{line}번 줄: 열 수가 머리글과 다릅니다")
+        records.append((_file_id(row["id"], f"{line}번 줄"), {k: row.get(k) for k in CSV_FIELDS}))
+    return records
+
+
 def roundtrip_check(store, path, start=None, end=None, category=None):
-    """내보낸 파일을 다시 읽어 원래 기록과 똑같은지 대조. 다른 번호 목록을 돌려준다(비어 있으면 같음)."""
-    raise NotImplementedError("이 함수를 구현한다")
+    """내보낸 파일을 다시 읽어 원래 기록과 똑같은지 대조. 다른 번호 목록을 돌려준다(비어 있으면 같음).
+
+    - 원래 기록은 내보낼 때와 같은 기준(_selected: expenses_in + category_of, 삭제 제외)으로 고른다
+    - CSV 는 export_csv 가 쓰는 글자(_csv_row)와 열마다, JSON 은 export_json 이 쓰는 지출 dict 전체와 비교한다
+    - 다른 번호: 내용이 다른 지출, 기록에만 있는 지출, 파일에만 있는 번호, 파일 안에서 겹친 번호. 오름차순
+    - 확장자가 .json 이면 JSON, 아니면 CSV(read_csv_rows 로 읽어 UTF-8·CP949 모두 읽음)
+    - id 열·값이 잘못된 파일, 열 수가 다른 줄, JSON 모양 오류는 ValueError. 파일이 없으면 OSError
+    """
+    is_json = os.fspath(path).lower().endswith(".json")
+    expected = {}
+    for e in _selected(store, start, end, category):
+        if is_json:
+            expected[e["id"]] = json.loads(json.dumps(e, ensure_ascii=False))   # 파일에 쓴 모양 그대로
+        else:
+            expected[e["id"]] = {k: "" if v is None else str(v) for k, v in _csv_row(e).items()}
+    seen, differ = set(), set()
+    for eid, record in _file_records(path):
+        if eid in seen or expected.get(eid) != record:
+            differ.add(eid)
+        seen.add(eid)
+    differ |= set(expected) - seen
+    return sorted(differ)
 
 
 IMPORT_REQUIRED = ("date", "payer", "amount")

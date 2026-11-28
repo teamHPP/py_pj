@@ -611,6 +611,81 @@ class VerifyExportTest(ExportData):
                                "참고: 건수가 다릅니다(파일 2건, 기록 4건)"])
 
 
+class RoundtripTest(ExportData):
+    """선택 "내보낸 파일을 다시 읽어 원래 기록과 똑같은지 대조": roundtrip_check. 자료는 ExportData(1·2·3·5번, 4번 삭제)."""
+
+    def test_same_after_export(self):
+        for name, fn in (("r.csv", transfer_io.export_csv), ("r.json", transfer_io.export_json)):
+            p = self.path(name)
+            with self.subTest(file=name):
+                fn(self.store, p)
+                self.assertEqual(transfer_io.roundtrip_check(self.store, p), [])
+                fn(self.store, p, "2026-11-01", "2026-11-30", "교통")          # 기간·분류를 골라 내보낸 파일
+                self.assertEqual(transfer_io.roundtrip_check(self.store, p, "2026-11-01", "2026-11-30", "교통"), [])
+
+    def test_record_changed_after_export(self):
+        for name, fn in (("r.csv", transfer_io.export_csv), ("r.json", transfer_io.export_json)):
+            p = self.path(name)
+            with self.subTest(file=name):
+                fn(self.store, p)
+                before = copy.deepcopy(self.store.data)
+                self.store.get_expense(2)["memo"] = "고침"                     # 내용이 바뀐 지출
+                self.store.get_expense(3)["deleted"] = True                     # 기록에서 빠진 지출(파일에만 있음)
+                self.store.get_expense(4)["deleted"] = False                    # 기록에 새로 생긴 지출(파일에 없음)
+                self.assertEqual(transfer_io.roundtrip_check(self.store, p), [2, 3, 4])
+                self.store.data = before
+
+    def test_file_edited(self):
+        p = self.path("r.csv")
+        transfer_io.export_csv(self.store, p)
+        with open(p, encoding="utf-8-sig") as f:
+            text = f.read()
+        with open(p, "w", encoding="utf-8-sig", newline="") as f:
+            f.write(text.replace("3000,", "3001,", 1) + "1,2026-10-31,양정현,3000,양정현;신동훈;이은경,,식비,회의 후 저녁\n")
+        self.assertEqual(transfer_io.roundtrip_check(self.store, p), [1])      # 금액 바뀜 + 같은 번호가 두 번
+
+    def test_csv_resaved_as_cp949(self):
+        # 엑셀에서 다시 저장하면 BOM 없는 CP949 가 될 수 있다. read_csv_rows 가 판별해서 그대로 대조한다
+        p = self.path("r.csv")
+        transfer_io.export_csv(self.store, p)
+        with open(p, encoding="utf-8-sig") as f:
+            text = f.read()
+        with open(p, "w", encoding="cp949", newline="") as f:
+            f.write(text)
+        self.assertEqual(transfer_io.roundtrip_check(self.store, p), [])
+
+    def test_does_not_change_store(self):
+        p = self.path("r.json")
+        transfer_io.export_json(self.store, p)
+        before = copy.deepcopy(self.store.data)
+        transfer_io.roundtrip_check(self.store, p)
+        self.assertEqual(self.store.data, before)
+
+    def test_bad_files(self):
+        with self.assertRaises(OSError):
+            transfer_io.roundtrip_check(self.store, self.path("없음.csv"))
+        for name, text in (("a.csv", "amount\n100\n"), ("b.csv", "id,amount\nx,100\n"), ("c.csv", "id,amount\n1\n"),
+                           ("d.json", "{}"), ("e.json", "[1]"), ("f.json", '[{"amount": 1}]')):
+            p = self.path(name)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(text)
+            with self.subTest(file=name), self.assertRaises(ValueError):
+                transfer_io.roundtrip_check(self.store, p)
+
+    def test_roundtrip_command(self):
+        from moim import cli
+        p = self.path("cmd.csv")
+        transfer_io.export_csv(self.store, p, "2026-11-01", "2026-11-30")
+        out = []
+        args = cli.build_parser().parse_args(["io", "roundtrip", p, "--month", "2026-11"])
+        self.assertFalse(cli.run(args, self.cfg, self.store, out.append))     # 조회만 하므로 저장 안 함
+        self.store.get_expense(2)["amount"] = 6001
+        cli.run(args, self.cfg, self.store, out.append)
+        self.assertEqual(out, ["똑같습니다: 지출 2건 모두 원래 기록과 같음", "원래 기록과 다른 지출 1건: 2번"])
+        for line in out:
+            line.encode("cp949")
+
+
 class ImportCsvTest(StoreCase):
     """import_csv: CSV 가져오기, 열 이름 연결, 오류 줄 번호. 명부는 규격 2장의 S."""
 

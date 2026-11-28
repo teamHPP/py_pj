@@ -30,6 +30,8 @@ def add_parser(sub, period_args):
     _select_args(grp.add_parser("export-json", help="지출을 JSON으로 내보내기"), period_args)
     _select_args(grp.add_parser("verify", help="내보낸 파일 합계가 기록 합계와 같은지 검사"
                                                 "(내보낼 때와 같은 기간·분류를 준다)"), period_args)
+    _select_args(grp.add_parser("roundtrip", help="내보낸 파일을 다시 읽어 지출마다 원래 기록과 똑같은지 대조"
+                                                   "(내보낼 때와 같은 기간·분류를 준다)"), period_args)
     s = grp.add_parser("import", help="CSV 지출 가져오기(UTF-8·CP949 자동 판별)")
     s.add_argument("path", help="CSV 파일 경로")
     s.add_argument("--map", default="", help="열 이름 연결 '파일 열=필드;…' 예: '날짜=date;금액=amount'")
@@ -96,6 +98,14 @@ def run(c, args, cfg, store, out):
         count = transfer_io.export_count(store, start, end, args.category)
         if file_count != count:
             out(f"참고: 건수가 다릅니다(파일 {file_count}건, 기록 {count}건)")
+        return False
+    if c == "roundtrip":
+        start, end = _range(args)
+        diff = transfer_io.roundtrip_check(store, args.path, start, end, args.category)
+        if diff:
+            out(f"원래 기록과 다른 지출 {len(diff)}건: {_lines(diff)}번")
+        else:
+            out(f"똑같습니다: 지출 {transfer_io.export_count(store, start, end, args.category)}건 모두 원래 기록과 같음")
         return False
     out(f"아직 만들지 않은 명령입니다: {GROUP} {c or ''}".rstrip())
     return False
